@@ -12,15 +12,18 @@ provided.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install soul-platform
+.venv/bin/pip install https://github.com/sknaider/soul-platform/releases/download/v0.1.0/soul_platform-0.1.0-py3-none-any.whl
 soul-platform --serve                    # local API on 127.0.0.1:8890
 ```
+
+The immutable GitHub release is the installation source while the PyPI trusted
+publisher is being activated.
 
 Optional integrations:
 
 ```bash
-.venv/bin/pip install 'soul-platform[postgres]'
-.venv/bin/pip install 'soul-platform[desktop]'
+.venv/bin/pip install 'soul-platform[postgres] @ https://github.com/sknaider/soul-platform/releases/download/v0.1.0/soul_platform-0.1.0-py3-none-any.whl'
+.venv/bin/pip install 'soul-platform[desktop] @ https://github.com/sknaider/soul-platform/releases/download/v0.1.0/soul_platform-0.1.0-py3-none-any.whl'
 ```
 
 The installer never uses sudo or configures PostgreSQL. It can install Python
