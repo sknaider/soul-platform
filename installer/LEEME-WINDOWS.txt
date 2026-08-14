@@ -1,0 +1,35 @@
+SOUL PLATFORM 0.4.1 — INSTALACION EN WINDOWS
+==============================================
+
+Requisitos:
+- Windows 10 u 11.
+- Python 3.13 x64 para el ZIP offline verificable.
+- No necesita Internet ni PyPI para instalar SOUL, Core, ANN o la bandeja:
+  todos los wheels Windows estan incluidos y fijados por SHA-256.
+- Ollama con al menos un modelo local si quieres arrancar el alma al instalar.
+  Si falta bge-m3, `ollama pull bge-m3` si requiere Internet para descargarlo.
+
+Pasos:
+1. Extrae TODO el contenido del ZIP en una carpeta normal.
+2. Haz doble clic en Instalar-SOUL-Windows.bat.
+3. Espera el mensaje: "Instalacion terminada correctamente".
+4. Busca el icono violeta SOUL junto al reloj de Windows.
+
+El instalador:
+- verifica el lock exacto WHEELHOUSE.sha256 y el SHA-256 individual de cada wheel;
+- instala la wheelhouse con --no-index (no consulta PyPI en modo bundled);
+- crea un entorno aislado en %LOCALAPPDATA%\SOUL\venv;
+- no pide administrador ni modifica el Python del sistema;
+- conserva identidad y memorias al actualizar o reinstalar;
+- escucha solamente en 127.0.0.1:11435 y exige token.
+- instala SOUL Tray al iniciar sesion como el usuario normal, nunca SYSTEM.
+- ejecuta un diagnostico de versiones, DB, runtime y autostart antes de cerrar;
+- instala la interfaz de bandeja para prender/apagar el alma, elegir un modelo
+  Ollama y copiar el endpoint/token sin usar la terminal.
+
+Si no detecta un modelo Ollama, instala el programa sin arrancar el proxy. Luego:
+
+  %LOCALAPPDATA%\SOUL\venv\Scripts\soul-machine.exe init --model NOMBRE_MODELO
+
+No compartas %LOCALAPPDATA%\SOUL\proxy.token.
+La interfaz solo lo copia cuando pulsas explicitamente "Copiar token local".

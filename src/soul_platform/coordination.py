@@ -25,6 +25,20 @@ class CoordinationDenied(RuntimeError):
     pass
 
 
+MAX_LEASE_SECONDS = 3600
+
+
+def _validate_lease_seconds(lease_seconds: int) -> None:
+    if (
+        not isinstance(lease_seconds, int)
+        or isinstance(lease_seconds, bool)
+        or not 1 <= lease_seconds <= MAX_LEASE_SECONDS
+    ):
+        raise ValueError(
+            f"lease_seconds must be between 1 and {MAX_LEASE_SECONDS}"
+        )
+
+
 @dataclass(frozen=True)
 class TaskRecord:
     task_id: str
@@ -546,8 +560,7 @@ class Coordinator:
     async def claim(
         self, task_id: str, actor: str, idempotency_key: str, lease_seconds: int = 60
     ) -> TaskRecord:
-        if lease_seconds <= 0:
-            raise ValueError("lease_seconds must be positive")
+        _validate_lease_seconds(lease_seconds)
         def op(conn: sqlite3.Connection) -> TaskRecord:
             task = self.store._task(conn, task_id)
             role = self.store._member_role(conn, task.tenant, actor)
@@ -585,8 +598,7 @@ class Coordinator:
         self, task_id: str, actor: str, target: str, idempotency_key: str,
         expected_version: int, lease_seconds: int = 60,
     ) -> TaskRecord:
-        if lease_seconds <= 0:
-            raise ValueError("lease_seconds must be positive")
+        _validate_lease_seconds(lease_seconds)
         def op(conn: sqlite3.Connection) -> TaskRecord:
             task = self.store._task(conn, task_id)
             actor_role = self.store._member_role(conn, task.tenant, actor)

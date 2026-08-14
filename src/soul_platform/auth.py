@@ -28,6 +28,15 @@ class VerifiedPrincipal:
     expires_at: int
 
 
+@dataclass(frozen=True)
+class TrustedPrincipal:
+    """Immutable identity binding for one trusted signing key."""
+
+    public_key: Ed25519PublicKey
+    tenant: str
+    actor: str
+
+
 def _encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
@@ -62,7 +71,7 @@ class PrincipalTokenIssuer:
 
 
 class PrincipalTokenVerifier:
-    def __init__(self, trust_store: Mapping[str, Ed25519PublicKey]) -> None:
+    def __init__(self, trust_store: Mapping[str, TrustedPrincipal]) -> None:
         self.trust_store = dict(trust_store)
 
     def verify(self, token: str) -> VerifiedPrincipal:
@@ -84,13 +93,15 @@ class PrincipalTokenVerifier:
         now = int(time.time())
         if payload["iat"] > now + 30 or payload["exp"] <= now or payload["exp"] - payload["iat"] > 3600:
             raise AuthenticationDenied("token is expired or outside policy")
-        key = self.trust_store.get(payload["key_id"])
-        if key is None:
+        binding = self.trust_store.get(payload["key_id"])
+        if binding is None:
             raise AuthenticationDenied("token key is not trusted")
         try:
-            key.verify(signature, data)
+            binding.public_key.verify(signature, data)
         except Exception as exc:
             raise AuthenticationDenied("token signature is invalid") from exc
+        if payload["tenant"] != binding.tenant or payload["actor"] != binding.actor:
+            raise AuthenticationDenied("token principal does not match its trusted key")
         return VerifiedPrincipal(
             payload["tenant"], payload["actor"], payload["key_id"], payload["exp"]
         )
