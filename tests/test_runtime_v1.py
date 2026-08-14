@@ -39,8 +39,21 @@ def module(registry=None, calls=0):
 
 def provider(code: str, *, max_output_bytes: int = 65_536):
     return SubprocessLLMProvider(
-        (sys.executable, "-c", code), max_output_bytes=max_output_bytes
+        (sys.executable, "-c", code), max_output_bytes=max_output_bytes,
+        allow_host_execution=True,
     )
+
+
+async def test_host_provider_is_fail_closed_and_does_not_inherit_secrets(monkeypatch):
+    with pytest.raises(ValueError, match="disabled by default"):
+        SubprocessLLMProvider((sys.executable, "-c", "print('x')"))
+    monkeypatch.setenv("SOUL_SECRET_SHOULD_NOT_LEAK", "sensitive")
+    llm = provider(
+        "import json,os; json.load(__import__('sys').stdin); "
+        "print('{\"answer\":\"clean\"}' if 'SOUL_SECRET_SHOULD_NOT_LEAK' not in os.environ "
+        "else '{\"answer\":\"leaked\"}')"
+    )
+    assert parse_action(await llm("system", "transcript"))["answer"] == "clean"
 
 
 def test_protocol_is_exact_not_regex_salvaged():
@@ -70,20 +83,31 @@ async def test_runtime_calls_contained_tool_then_learns_complete_turn(tmp_path):
         frozenset({"pure"}),
     )
     soul = Soul()
-    runtime = AgentRuntime(soul, module({"echo": tool}, 1), llm, {"echo": "echo"})
+    recorded = []
+    async def record(turn): recorded.append(turn)
+    runtime = AgentRuntime(
+        soul, module({"echo": tool}, 1), llm, {"echo": "echo"}, turn_recorder=record,
+        allow_uncontained_model=True,
+    )
     result = await runtime.turn("saluda")
     assert result["answer"] == "listo"
     assert result["tools_used"] == [{"tool": "echo", "status": "ok"}]
-    assert "answer='listo'" in soul.memory.stored[0][0]
+    assert soul.memory.stored == []
+    assert recorded == [{
+        "user": "saluda", "answer": "listo", "tools_used": [{"tool": "echo", "status": "ok"}]
+    }]
 
 
 async def test_runtime_rejects_uncontained_provider_and_non_protocol_output():
     async def uncontained(_s, _u): return "plain text"
     with pytest.raises(TypeError, match="SubprocessLLMProvider"):
         AgentRuntime(Soul(), module(), uncontained, {})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="outside the release profile"):
+        AgentRuntime(Soul(), module(), provider("print('{}')"), {})
     with pytest.raises(ProtocolViolation):
         await AgentRuntime(
-            Soul(), module(), provider("print('plain text')"), {}
+            Soul(), module(), provider("print('plain text')"), {},
+            allow_uncontained_model=True,
         ).turn("hello")
 
 
@@ -92,7 +116,10 @@ async def test_runtime_timeout_kills_and_reaps_provider_process(tmp_path):
     slow = provider(
         f"import os,time; open({str(pid_file)!r},'w').write(str(os.getpid())); time.sleep(10)"
     )
-    runtime = AgentRuntime(Soul(), module(), slow, {}, llm_timeout_seconds=0.1)
+    runtime = AgentRuntime(
+        Soul(), module(), slow, {}, llm_timeout_seconds=0.1,
+        allow_uncontained_model=True,
+    )
     started = time.monotonic()
     with pytest.raises(ProtocolViolation, match="timeout"):
         await runtime.turn("hello")
@@ -106,9 +133,10 @@ async def test_runtime_bounds_model_output_and_provider_failure():
     with pytest.raises(ProtocolViolation, match="size"):
         await AgentRuntime(
             Soul(), module(), provider("print('x'*100)", max_output_bytes=8), {},
-            max_model_output_bytes=8,
+            max_model_output_bytes=8, allow_uncontained_model=True,
         ).turn("hello")
     with pytest.raises(ProtocolViolation, match="failed"):
         await AgentRuntime(
-            Soul(), module(), provider("raise SystemExit(3)"), {}
+            Soul(), module(), provider("raise SystemExit(3)"), {},
+            allow_uncontained_model=True,
         ).turn("hello")

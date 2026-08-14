@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import tomllib
-from importlib.metadata import version
 from pathlib import Path
 
 import soul_platform
@@ -13,8 +12,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_version_contract_and_packaged_source_layout():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == soul_platform.__version__ == version("soul-platform")
+    assert project["version"] == soul_platform.__version__
+    assert Path(soul_platform.__file__).resolve().is_relative_to((ROOT / "src").resolve())
     assert (ROOT / "src/soul_platform/agency.py").is_file()
+    assert "soul-framework==0.4.3" in project["dependencies"]
+    assert "numpy>=1.26" in project["dependencies"]
+    assert "usearch>=2.16.0" in project["dependencies"]
+    assert all("soul-framework[ann]" not in item for item in project["dependencies"])
+    assert all(
+        "soul-framework[ann" not in item
+        for values in project["optional-dependencies"].values()
+        for item in values
+    )
+
+
+def test_build_excludes_all_local_distribution_directories():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    excluded = config["tool"]["hatch"]["build"]["exclude"]
+    assert "/dist" in excluded
+    assert "/dist-*" in excluded
+    assert "/uv.lock" in excluded
 
 
 def test_release_surface_has_no_seal_internals_or_secret_forms():

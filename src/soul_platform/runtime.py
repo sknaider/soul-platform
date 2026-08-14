@@ -9,7 +9,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from soul_platform.agency import (
     AgencyModule, CapabilityDenied, IndeterminateEffect, ToolExecutionError,
@@ -26,12 +26,18 @@ class SubprocessLLMProvider:
 
     command: tuple[str, ...]
     max_output_bytes: int = 65_536
+    allow_host_execution: bool = False
 
     def __post_init__(self) -> None:
         if not self.command or any("\x00" in part for part in self.command):
             raise ValueError("provider command must be a static non-empty argv tuple")
         if self.max_output_bytes <= 0:
             raise ValueError("provider max_output_bytes must be positive")
+        if not self.allow_host_execution:
+            raise ValueError(
+                "host subprocess providers are disabled by default; use a contained adapter "
+                "or explicitly set allow_host_execution=True"
+            )
 
     async def __call__(self, system: str, transcript: str) -> str:
         proc = await asyncio.create_subprocess_exec(
@@ -40,6 +46,7 @@ class SubprocessLLMProvider:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
+            env={"PATH": os.defpath, "LANG": "C.UTF-8"},
         )
         assert proc.stdin is not None and proc.stdout is not None
         payload = json.dumps(
@@ -48,7 +55,12 @@ class SubprocessLLMProvider:
         ).encode()
         try:
             proc.stdin.write(payload)
-            await proc.stdin.drain()
+            try:
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # A provider may finish without consuming the entire request.
+                # Its exit code/output remain the authoritative protocol result.
+                pass
             proc.stdin.close()
             output = await proc.stdout.read(self.max_output_bytes + 1)
             if len(output) > self.max_output_bytes:
@@ -115,6 +127,8 @@ class AgentRuntime:
     max_steps: int = 6
     llm_timeout_seconds: float = 30.0
     max_model_output_bytes: int = 65_536
+    turn_recorder: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    allow_uncontained_model: bool = False
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
@@ -125,6 +139,11 @@ class AgentRuntime:
             raise ValueError("max_model_output_bytes must be positive")
         if type(self.llm) is not SubprocessLLMProvider:
             raise TypeError("llm must use the built-in hard-cancelable SubprocessLLMProvider")
+        if self.llm.allow_host_execution and not self.allow_uncontained_model:
+            raise TypeError(
+                "uncontained host model is outside the release profile; "
+                "use a contained adapter or explicitly acknowledge the experimental boundary"
+            )
 
     async def _call_llm(self, system: str, transcript: str) -> str:
         started = time.monotonic()
@@ -163,9 +182,10 @@ class AgentRuntime:
             action = parse_action(await self._call_llm(system, "\n".join(transcript)))
             if "answer" in action:
                 answer = str(action["answer"])
-                await self.soul.memory.store(
-                    f"turn user={user_message!r} answer={answer!r}", importance=6
-                )
+                if self.turn_recorder is not None:
+                    await self.turn_recorder(
+                        {"user": user_message, "answer": answer, "tools_used": list(trace)}
+                    )
                 return {"answer": answer, "tools_used": trace, "protocol": "json"}
 
             tool = str(action["tool"])

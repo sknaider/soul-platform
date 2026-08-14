@@ -90,6 +90,59 @@ async def test_concurrent_claim_has_one_winner_and_reviewer_cannot_execute(tmp_p
     assert sum(isinstance(item, CoordinationDenied) for item in results) == 1
 
 
+async def test_lease_duration_is_bounded_and_expired_claim_can_be_recovered(tmp_path):
+    path = tmp_path / "bounded-lease.db"
+    store, _ = await setup_store(path)
+    coordinator = Coordinator(store)
+    task = await coordinator.create_task("team", "ada", "bounded", "create-bounded")
+
+    for invalid in (3601, 1_000_000_000):
+        with pytest.raises(ValueError, match="between 1 and 3600"):
+            await coordinator.claim(
+                task.task_id, "alice", f"claim-{invalid}", lease_seconds=invalid
+            )
+
+    claimed = await coordinator.claim(
+        task.task_id, "alice", "claim-maximum", lease_seconds=3600
+    )
+    assert claimed.current_agent == "alice"
+
+    for invalid in (3601, 1_000_000_000):
+        with pytest.raises(ValueError, match="between 1 and 3600"):
+            await coordinator.handoff(
+                task.task_id,
+                "alice",
+                "nexus",
+                f"handoff-{invalid}",
+                expected_version=claimed.version,
+                lease_seconds=invalid,
+            )
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE tasks SET lease_until='2000-01-01T00:00:00+00:00' "
+            "WHERE task_id=?",
+            (task.task_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    recovered = await coordinator.claim(
+        task.task_id, "nexus", "claim-after-expiry", lease_seconds=3600
+    )
+    handed = await coordinator.handoff(
+        task.task_id,
+        "nexus",
+        "alice",
+        "handoff-maximum",
+        expected_version=recovered.version,
+        lease_seconds=3600,
+    )
+    assert handed.current_agent == "alice"
+
+
 async def test_roles_owner_and_expired_lease_fail_closed(tmp_path):
     path = tmp_path / "roles.db"
     store, _ = await setup_store(path)

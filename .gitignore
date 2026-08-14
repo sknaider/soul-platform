@@ -1,11 +1,5 @@
-.venv/
+dist/
+.pytest_cache/
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
-.coverage
-dist/
-build/
-*.db
-.env
-.env.*
+.venv/

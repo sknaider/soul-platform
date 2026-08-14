@@ -125,6 +125,66 @@ async def test_budget_and_audit_survive_runtime_restart(tmp_path, trust_store):
         conn.close()
     assert statuses.count("reserved") == 2 and statuses.count("ok") == 2
     assert statuses.count("budget_exhausted") == 1
+    head = await reopened_audit.verify()
+    assert len(head) == 64 and head != "0" * 64
+
+
+async def test_audit_chain_detects_row_tampering_on_reopen(tmp_path):
+    path = str(tmp_path / "audit.db")
+    sink = SqliteAuditSink(path)
+    await sink.initialize()
+    from soul_platform.agency import AuditEvent
+
+    await sink.append(AuditEvent(
+        tenant="team", task_id="t", actor="ada", tool="echo", status="ok",
+        call_number=1, args_sha256="a" * 64, policy_sha256="b" * 64,
+        result_sha256="c" * 64,
+    ))
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE agency_audit SET status='forged' WHERE event_id=1")
+    with pytest.raises(ValueError, match="hash chain"):
+        await SqliteAuditSink(path).initialize()
+
+
+async def test_audit_head_detects_suffix_deletion_on_reopen(tmp_path):
+    path = str(tmp_path / "audit.db")
+    sink = SqliteAuditSink(path)
+    await sink.initialize()
+    from soul_platform.agency import AuditEvent
+
+    event = AuditEvent(
+        tenant="team", task_id="t", actor="ada", tool="echo", status="ok",
+        call_number=1, args_sha256="a" * 64, policy_sha256="b" * 64,
+        result_sha256="c" * 64,
+    )
+    await sink.append(event)
+    await sink.append(event)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "DELETE FROM agency_audit WHERE event_id=(SELECT MAX(event_id) FROM agency_audit)"
+        )
+    with pytest.raises(ValueError, match="head witness"):
+        await SqliteAuditSink(path).initialize()
+
+
+async def test_audit_head_advances_without_race_under_concurrent_appends(tmp_path):
+    path = str(tmp_path / "audit.db")
+    sink = SqliteAuditSink(path)
+    await sink.initialize()
+    from soul_platform.agency import AuditEvent
+
+    await asyncio.gather(*(
+        sink.append(AuditEvent(
+            tenant="team", task_id=f"t-{index}", actor="ada", tool="echo",
+            status="ok", call_number=index, args_sha256=f"{index:064x}",
+            policy_sha256="b" * 64, result_sha256="c" * 64,
+        ))
+        for index in range(12)
+    ))
+    head = await sink.verify()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agency_audit").fetchone()[0] == 12
+    assert len(head) == 64
 
 
 async def test_tool_exception_context_is_redacted(trust_store):

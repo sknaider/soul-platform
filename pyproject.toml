@@ -1,28 +1,44 @@
 [project]
 name = "soul-platform"
-version = "0.1.0"
+version = "0.4.1"
 description = "SOUL Platform — contained agent runtime, coordination and autonomy for SOUL Core"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "soul-framework>=0.3.0,<0.4",
+    "soul-framework==0.4.3",
+    "numpy>=1.26",
+    "usearch>=2.16.0",
     "cryptography>=42",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-postgres = ["asyncpg>=0.29", "soul-framework[postgres]>=0.3.0,<0.4"]
-embeddings = ["soul-framework[embeddings]>=0.3.0,<0.4"]
-desktop = ["pywebview>=5"]
+postgres = ["soul-framework[postgres]==0.4.3"]
+embeddings = ["soul-framework[embeddings]==0.4.3"]
+desktop = ["pystray==0.19.5", "pillow==12.3.0"]
 all = ["soul-platform[postgres,embeddings,desktop]"]
-dev = ["httpx>=0.27", "pytest>=8", "pytest-asyncio>=0.24"]
+dev = [
+    "build==1.5.0",
+    "httpx>=0.27",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "twine==7.0.0",
+]
 
 [project.scripts]
 soul-platform = "soul_platform.cli:main"
+soul-machine = "soul_platform.bootstrap:main"
+soul-machine-embedding-cutover = "soul_platform.embedding_cutover:main"
+soul-machine-doctor = "soul_platform.doctor:main"
+soul-tray-cli = "soul_platform.tray:main"
+
+[project.gui-scripts]
+soul-tray = "soul_platform.tray:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -32,6 +48,8 @@ packages = ["src/soul_platform"]
 exclude = [
     "/.pytest_cache",
     "/dist",
+    "/dist-*",
+    "/uv.lock",
     "/backend",
     "/runtime",
     "**/__pycache__",
