@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PKG="soul-platform"
-PLATFORM_VERSION="0.4.1"
+PLATFORM_VERSION="0.5.6"
 CORE_VERSION="0.4.3"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 VENV="${SOUL_VENV:-$HOME/.soul/venv}"
@@ -171,9 +171,9 @@ elif find "$SCRIPT_DIR" -maxdepth 1 -type f -name 'soul_platform-*.whl' -print -
   PLATFORM_EXPECTED_SHA=$(sha256_file "$PLATFORM_WHEEL")
   CORE_EXPECTED_SHA=$(sha256_file "$CORE_WHEEL")
   SOURCE_SPEC=$PLATFORM_WHEEL
-  # The Unix archive freezes our two first-party wheels.  Its third-party
-  # dependencies are intentionally resolved online from official PyPI, with
-  # user/env pip configuration ignored and source builds forbidden.
+  # The Unix archive freezes our two first-party wheels. Its third-party
+  # dependencies are resolved online from official PyPI, ignoring user pip
+  # configuration and forbidding source builds.
   PIP_INDEX_FLAGS=(--isolated --index-url https://pypi.org/simple --only-binary=:all:)
   # A version match is not a byte match.  Replace an older same-version build
   # with the exact wheel whose SHA-256 was verified above.
@@ -184,10 +184,8 @@ fi
 SPEC="$SOURCE_SPEC"; [ -n "$EXTRAS" ] && SPEC="${SOURCE_SPEC}[${EXTRAS}]"
 INSTALL_SPECS=("$SPEC")
 if [ -n "${CORE_WHEEL:-}" ]; then
-  # Give pip both first-party wheels in the same resolution transaction.  Core
-  # 0.4.3 may intentionally be newer than public PyPI; installing it first and
-  # resolving Platform separately makes --upgrade try the index and fail even
-  # though the exact verified bytes are already local.
+  # Resolve both verified first-party wheels in one transaction so pip never
+  # substitutes public bytes for the bundled Core.
   INSTALL_SPECS=("$CORE_WHEEL" "$SPEC")
 fi
 installed_ver() {
@@ -356,7 +354,7 @@ PY
          { [ ! -e "$candidate" ] && [ -e "$checkpoint" ]; }; then
         die "migración parcial ambigua: candidate/checkpoint deben existir juntos"
       fi
-      log "migrando embeddings legacy con rollback sin pérdida"
+      log "migrando embeddings legacy con rollback byte-exacto"
       CUTOVER_RECOVERY=0
       recover_legacy_runtime() {
         [ "$CUTOVER_RECOVERY" -eq 1 ] || return 0
@@ -386,7 +384,7 @@ PY
       --base-url "$MACHINE_BASE_URL" \
       --model "$MACHINE_MODEL"; then
       if [ "${CUTOVER_ACTIVATED:-0}" -eq 1 ]; then
-        warn "el runtime BGE no inició; ejecutando rollback sin pérdida"
+        warn "el runtime BGE no inició; ejecutando rollback byte-exacto"
         "$VENV/bin/soul-machine-embedding-cutover" rollback "$SOUL_CONFIG" "$checkpoint" \
           || die "HOLD CRÍTICO: runtime nuevo falló y el rollback no pudo completarse"
         CUTOVER_ACTIVATED=0

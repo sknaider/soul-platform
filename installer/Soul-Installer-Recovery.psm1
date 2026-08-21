@@ -6,7 +6,11 @@ function Invoke-SoulPostActivateRuntime {
         [Parameter(Mandatory = $true)][string]$Machine,
         [Parameter(Mandatory = $true)][string]$Cutover,
         [Parameter(Mandatory = $true)][string]$SoulConfig,
-        [Parameter(Mandatory = $true)][string]$Checkpoint,
+        # Fresh installs have no embedding-cutover checkpoint.  The value is
+        # only consumed by the rollback branch when CutoverActivated is true,
+        # so rejecting an empty string prevents a clean machine from reaching
+        # `soul-machine init` at all.
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Checkpoint,
         [Parameter(Mandatory = $true)][string]$SoulRoot,
         [Parameter(Mandatory = $true)][string]$Kind,
         [Parameter(Mandatory = $true)][string]$BaseUrl,

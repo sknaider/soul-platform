@@ -1,6 +1,6 @@
 [project]
 name = "soul-platform"
-version = "0.4.1"
+version = "0.5.6"
 description = "SOUL Platform — contained agent runtime, coordination and autonomy for SOUL Core"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,9 @@ soul-machine = "soul_platform.bootstrap:main"
 soul-machine-embedding-cutover = "soul_platform.embedding_cutover:main"
 soul-machine-doctor = "soul_platform.doctor:main"
 soul-tray-cli = "soul_platform.tray:main"
+soul-autowire = "soul_platform.autowire.cli:main"
+soul-mcp-stdio = "soul_platform.mcp_stdio:main"
+soul-codex-session-start = "soul_platform.codex_session_start:main"
 
 [project.gui-scripts]
 soul-tray = "soul_platform.tray:main"

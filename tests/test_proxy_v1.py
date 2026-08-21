@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import http.server
+import base64
 import sqlite3
 import sys
 import threading
@@ -11,10 +12,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from soul_framework import Soul
 from soul_framework.config import SoulConfig
 
 from soul_platform.proxy import ProxySettings, create_app, run_proxy
+from soul_platform.auth import PrincipalTokenIssuer
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +38,32 @@ def _local_bge_stub(monkeypatch):
     monkeypatch.setattr(
         "soul_platform.local_embedding.LocalBgeM3Embedding.embed_batch", embed_batch
     )
+    # Most proxy unit tests exercise T5 and persistence, not OS process
+    # identity.  Dedicated negative tests below keep the real default closed.
+    monkeypatch.setattr(
+        "soul_platform.proxy.verify_runtime_attestation", lambda _settings: True
+    )
+
+
+async def test_private_context_is_blocked_when_live_runtime_attestation_fails(tmp_path):
+    settings = _settings(tmp_path)
+    captured = []
+    app = create_app(
+        settings,
+        upstream_transport=_transport(captured),
+        upstream_attestor=lambda _settings: False,
+    )
+    response = await _request(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {settings.read_token()}"},
+        json={"messages": [{"role": "user", "content": "¿Qué recuerdo?"}]},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Soul-Egress"] == "blocked-unattested-upstream"
+    assert response.headers["X-Soul-Memories"] == "0"
+    assert "Memorias relevantes" not in captured[0]["messages"][0]["content"]
 
 
 def _settings(tmp_path: Path, model: str = "brain-a") -> ProxySettings:
@@ -48,10 +78,33 @@ def _settings(tmp_path: Path, model: str = "brain-a") -> ProxySettings:
         port=11435,
         require_auth=True,
         token_file=token,
-        upstream_kind="openai-compatible",
+        upstream_kind="ollama",
         upstream_base_url="http://127.0.0.1:11434/v1",
         upstream_model=model,
+        t5_mode="compatibility-single-owner",
+        t5_tenant="local-machine",
+        t5_owner_subject="local-owner",
+        t5_state_db=tmp_path / "MachineSoul.t5-egress.sqlite3",
     )
+
+
+def _enforce_settings(tmp_path: Path, model: str = "brain-a"):
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    keys = tmp_path / "principal-keys.json"
+    keys.write_text(json.dumps({"principal-1": base64.b64encode(public).decode()}))
+    keys.chmod(0o600)
+    base = _settings(tmp_path, model)
+    settings = ProxySettings(
+        **{
+            **base.__dict__,
+            "t5_mode": "enforce",
+            "t5_tenant": "team",
+            "t5_owner_subject": "alice",
+            "t5_principal_keys_file": keys,
+        }
+    )
+    return settings, PrincipalTokenIssuer(private, "principal-1")
 
 
 def test_pythonw_without_stdio_disables_uvicorn_console_logging(tmp_path, monkeypatch):
