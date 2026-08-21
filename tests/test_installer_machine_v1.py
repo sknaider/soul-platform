@@ -14,7 +14,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.4.1"' in text
+    assert 'PLATFORM_VERSION="0.5.6"' in text
     assert 'CORE_VERSION="0.4.3"' in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
@@ -82,7 +82,7 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "Scripts\\soul-tray-cli.exe" in text
     assert 'Invoke-Checked $trayCli @("--check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.4.1"' in text
+    assert '[version]"0.5.6"' in text
     assert "soul-framework 0.4.3 exacto" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
@@ -108,7 +108,7 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     runtime = text.index('Invoke-SoulPostActivateRuntime', activated)
     assert activated < runtime
     guard = text.index("if (-not $NoMachine) {", text.index("$installedCoreVersion"))
-    ollama = text.index('$ollamaCommand = Get-Command "ollama"')
+    ollama = text.index('$ollamaExe = Ensure-Ollama')
     machine = text.index('$machine = Join-Path $Venv "Scripts\\soul-machine.exe"')
     assert guard < ollama < machine
     assert 'Good "BGE-M3 local verificado (1024 dimensiones + digest aprobado)"' in text
@@ -194,10 +194,10 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.4.1" in text
+    assert "SOUL PLATFORM 0.5.6" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text
-    assert "No necesita Internet ni PyPI" in text
+    assert "sin PyPI" in text
     assert "WHEELHOUSE.sha256" in text
     assert "--no-index" in text

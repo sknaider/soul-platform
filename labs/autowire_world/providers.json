@@ -1,0 +1,23 @@
+{
+  "schema": "soul.autowire-lab.providers.v1",
+  "machine_soul_id": "6d6372d2-b0fe-4ad2-93df-448db4a5fb51",
+  "memory_anchor": "VALERIA-RECUERDA-AYER",
+  "initial_provider_id": "qwen",
+  "allowed_clients": ["codex", "claude", "generic-openai"],
+  "providers": [
+    {"provider_id":"qwen","model":"qwen3-lab","protocol":"openai-chat","origin":"http://qwen:8000","region":"cn"},
+    {"provider_id":"deepseek","model":"deepseek-lab","protocol":"openai-chat","origin":"http://deepseek:8000","region":"cn"},
+    {"provider_id":"glm","model":"glm-lab","protocol":"openai-chat","origin":"http://glm:8000","region":"cn"},
+    {"provider_id":"kimi","model":"kimi-lab","protocol":"openai-chat","origin":"http://kimi:8000","region":"cn"},
+    {"provider_id":"ernie","model":"ernie-lab","protocol":"openai-chat","origin":"http://ernie:8000","region":"cn"},
+    {"provider_id":"hunyuan","model":"hunyuan-lab","protocol":"openai-chat","origin":"http://hunyuan:8000","region":"cn"},
+    {"provider_id":"doubao","model":"doubao-lab","protocol":"openai-responses","origin":"http://doubao:8000","region":"cn"},
+    {"provider_id":"minimax","model":"minimax-lab","protocol":"anthropic-messages","origin":"http://minimax:8000","region":"cn"},
+    {"provider_id":"claude","model":"claude-lab","protocol":"anthropic-messages","origin":"http://claude:8000","region":"us"},
+    {"provider_id":"gemini","model":"gemini-lab","protocol":"gemini-native","origin":"http://gemini:8000","region":"us"},
+    {"provider_id":"ollama","model":"ollama-lab","protocol":"ollama-native","origin":"http://ollama:8000","region":"local"},
+    {"provider_id":"flaky","model":"flaky-lab","protocol":"openai-chat","origin":"http://flaky:8000","region":"lab"},
+    {"provider_id":"badjson","model":"badjson-lab","protocol":"openai-chat","origin":"http://badjson:8000","region":"lab"},
+    {"provider_id":"redirect","model":"redirect-lab","protocol":"openai-chat","origin":"http://redirect:8000","region":"lab"}
+  ]
+}

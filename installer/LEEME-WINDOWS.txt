@@ -1,13 +1,10 @@
-SOUL PLATFORM 0.4.1 — INSTALACION EN WINDOWS
+SOUL PLATFORM 0.5.6 — INSTALACION EN WINDOWS
 ==============================================
 
 Requisitos:
-- Windows 10 u 11.
-- Python 3.13 x64 para el ZIP offline verificable.
-- No necesita Internet ni PyPI para instalar SOUL, Core, ANN o la bandeja:
-  todos los wheels Windows estan incluidos y fijados por SHA-256.
-- Ollama con al menos un modelo local si quieres arrancar el alma al instalar.
-  Si falta bge-m3, `ollama pull bge-m3` si requiere Internet para descargarlo.
+- Windows 10 22H2 o Windows 11.
+- Conexion a Internet solo si faltan Python, Ollama o los modelos locales.
+- Aproximadamente 3 GB libres para Python, Ollama, BGE-M3 y el cerebro minimo.
 
 Pasos:
 1. Extrae TODO el contenido del ZIP en una carpeta normal.
@@ -16,20 +13,29 @@ Pasos:
 4. Busca el icono violeta SOUL junto al reloj de Windows.
 
 El instalador:
-- verifica el lock exacto WHEELHOUSE.sha256 y el SHA-256 individual de cada wheel;
-- instala la wheelhouse con --no-index (no consulta PyPI en modo bundled);
+- verifica el SHA-256 del paquete incluido;
+- detecta Python 3.13 x64, Ollama, BGE-M3 y un cerebro local;
+- instala con WinGet solo lo que falta y omite lo que ya esta sano;
+- instala las dependencias Python desde la wheelhouse cerrada del ZIP, sin PyPI;
+- verifica WHEELHOUSE.sha256 y usa pip --no-index;
+- usa gemma3:1b como cerebro minimo solo si no encuentra ningun modelo generativo;
 - crea un entorno aislado en %LOCALAPPDATA%\SOUL\venv;
 - no pide administrador ni modifica el Python del sistema;
 - conserva identidad y memorias al actualizar o reinstalar;
 - escucha solamente en 127.0.0.1:11435 y exige token.
 - instala SOUL Tray al iniciar sesion como el usuario normal, nunca SYSTEM.
-- ejecuta un diagnostico de versiones, DB, runtime y autostart antes de cerrar;
-- instala la interfaz de bandeja para prender/apagar el alma, elegir un modelo
-  Ollama y copiar el endpoint/token sin usar la terminal.
 
-Si no detecta un modelo Ollama, instala el programa sin arrancar el proxy. Luego:
+Para diagnosticar sin cambiar nada:
 
-  %LOCALAPPDATA%\SOUL\venv\Scripts\soul-machine.exe init --model NOMBRE_MODELO
+  Instalar-SOUL-Windows.bat -Check
+
+Para impedir que instale prerrequisitos del sistema:
+
+  Instalar-SOUL-Windows.bat -NoBootstrap
+
+Compatibilidad demostrada: Windows 10 22H2/11, Codex CLI/Desktop, Claude Code,
+Ollama y clientes OpenAI-compatible. Otras apps requieren un hook/API oficial;
+SOUL las registra cuando exponen una superficie compatible, no las parchea.
 
 No compartas %LOCALAPPDATA%\SOUL\proxy.token.
 La interfaz solo lo copia cuando pulsas explicitamente "Copiar token local".

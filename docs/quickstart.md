@@ -40,14 +40,23 @@ toca tu Python del sistema):
 ./installer/soul-install.sh
 ```
 
-> **Nota de disponibilidad:** `soul-platform 0.4.1` y `soul-framework 0.4.3`
+> **Nota de disponibilidad:** `soul-platform 0.5.6` y `soul-framework 0.4.3`
 > se entregan juntos en un bundle con wheels y SHA-256. El paquete Platform no
 > está publicado en PyPI; usa el bundle o define `SOUL_PACKAGE_SOURCE`.
-> El ZIP de Windows trae la dependencia completa offline y fue probado por
-> efecto: extrae todo y abre
+> El ZIP de Windows fue probado por efecto: extrae todo y abre
 > `Instalar-SOUL-Windows.bat`; el checksum se valida antes de instalar.
-> El `tar.gz` de Linux/macOS verifica los wheels de SOUL pero resuelve sus
-> dependencias de terceros en línea desde PyPI; no se ofrece como bundle offline.
+
+En Platform 0.5.6 el instalador también configura AutoWire en modo `shadow`.
+Detecta y puede rutear cerebros Ollama locales, pero ningún listener HTTP recibe
+memoria privada: un proceso del mismo usuario podría suplantar el puerto.
+Codex CLI y Claude Code se cablean por MCP stdio local; una entrada `soul-local`
+previa y distinta produce `HOLD` en vez de ser sobrescrita. La detección de una
+API o listener compatible nunca equivale a consentimiento ni activa egreso
+cloud.
+
+El despliegue administrado puede añadir `-TrustCurrentOllama` al instalador.
+Ese switch es explícito: liga el listener Ollama vivo al usuario y al hash de
+su ejecutable; no confía automáticamente en otros listeners ni proveedores.
 
 ## 3. Arrancar el alma de tu máquina
 

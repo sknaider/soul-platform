@@ -1,0 +1,105 @@
+x-provider: &provider
+  image: python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+  user: "65532:65532"
+  command: ["python", "/lab/mock_provider.py"]
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=16m,mode=1777"]
+  volumes:
+    - ./:/lab:ro
+  networks: [lab]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=1).status == 200"]
+    interval: 1s
+    timeout: 2s
+    retries: 20
+
+x-control: &control
+  image: python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=16m,mode=1777"]
+  volumes:
+    - ./:/lab:ro
+    - state:/state
+  networks: [lab]
+  environment:
+    SOUL_LAB_GATEWAY_TOKEN: "SOUL-LAB-ONLY-NOT-A-REAL-SECRET-20260820"
+
+services:
+  init-state:
+    image: python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+    command: ["python", "-c", "import os; os.chown('/state', 65532, 65532); os.chmod('/state', 0o700)"]
+    network_mode: none
+    volumes:
+      - state:/state
+
+  qwen:
+    <<: *provider
+    environment: {PROVIDER_ID: qwen, MODEL_ID: qwen3-lab, PROTOCOL: openai-chat}
+  deepseek:
+    <<: *provider
+    environment: {PROVIDER_ID: deepseek, MODEL_ID: deepseek-lab, PROTOCOL: openai-chat}
+  glm:
+    <<: *provider
+    environment: {PROVIDER_ID: glm, MODEL_ID: glm-lab, PROTOCOL: openai-chat}
+  kimi:
+    <<: *provider
+    environment: {PROVIDER_ID: kimi, MODEL_ID: kimi-lab, PROTOCOL: openai-chat}
+  ernie:
+    <<: *provider
+    environment: {PROVIDER_ID: ernie, MODEL_ID: ernie-lab, PROTOCOL: openai-chat}
+  hunyuan:
+    <<: *provider
+    environment: {PROVIDER_ID: hunyuan, MODEL_ID: hunyuan-lab, PROTOCOL: openai-chat}
+  doubao:
+    <<: *provider
+    environment: {PROVIDER_ID: doubao, MODEL_ID: doubao-lab, PROTOCOL: openai-responses}
+  minimax:
+    <<: *provider
+    environment: {PROVIDER_ID: minimax, MODEL_ID: minimax-lab, PROTOCOL: anthropic-messages}
+  claude:
+    <<: *provider
+    environment: {PROVIDER_ID: claude, MODEL_ID: claude-lab, PROTOCOL: anthropic-messages}
+  gemini:
+    <<: *provider
+    environment: {PROVIDER_ID: gemini, MODEL_ID: gemini-lab, PROTOCOL: gemini-native}
+  ollama:
+    <<: *provider
+    environment: {PROVIDER_ID: ollama, MODEL_ID: ollama-lab, PROTOCOL: ollama-native}
+  flaky:
+    <<: *provider
+    environment: {PROVIDER_ID: flaky, MODEL_ID: flaky-lab, PROTOCOL: openai-chat, BEHAVIOR: flaky}
+  badjson:
+    <<: *provider
+    environment: {PROVIDER_ID: badjson, MODEL_ID: badjson-lab, PROTOCOL: openai-chat, BEHAVIOR: bad-json}
+  redirect:
+    <<: *provider
+    environment: {PROVIDER_ID: redirect, MODEL_ID: redirect-lab, PROTOCOL: openai-chat, BEHAVIOR: redirect}
+
+  reconcile:
+    <<: *control
+    command: ["python", "/lab/autowire_lab.py", "reconcile"]
+
+  gateway:
+    <<: *control
+    command: ["python", "/lab/autowire_lab.py", "serve"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:11435/ready', timeout=1).status == 200"]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+
+  verifier:
+    <<: *control
+    command: ["python", "/lab/verify_lab.py", "phase1"]
+
+networks:
+  lab:
+    internal: true
+
+volumes:
+  state:

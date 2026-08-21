@@ -38,4 +38,23 @@ if ($events[0] -notmatch '^machine\.exe\|init --kind ollama') { throw "new runti
 if ($events[1] -ne 'cutover.exe|rollback C:\SOUL\proxy.toml C:\SOUL\checkpoint.json') { throw "rollback was not second" }
 if ($events[2] -notmatch '^machine\.exe\|init --root C:\\SOUL --kind ollama') { throw "legacy runtime was not restarted third" }
 
-Write-Output "WINDOWS_RECOVERY_FAULT_INJECTION_OK events=$($events.Count)"
+$events.Clear()
+$freshRunner = {
+    param([string]$File, [string[]]$Arguments)
+    $events.Add("$File|$($Arguments -join ' ')")
+}
+Invoke-SoulPostActivateRuntime `
+    -Machine "machine.exe" `
+    -Cutover "cutover.exe" `
+    -SoulConfig "C:\SOUL\proxy.toml" `
+    -Checkpoint "" `
+    -SoulRoot "C:\SOUL" `
+    -Kind "ollama" `
+    -BaseUrl "http://127.0.0.1:11434/v1" `
+    -Model "brain" `
+    -CutoverActivated $false `
+    -Runner $freshRunner
+if ($events.Count -ne 1) { throw "fresh install expected one init call, got $($events.Count)" }
+if ($events[0] -notmatch '^machine\.exe\|init --kind ollama') { throw "fresh runtime was not initialized" }
+
+Write-Output "WINDOWS_RECOVERY_FAULT_INJECTION_OK rollback_events=3 fresh_events=$($events.Count)"

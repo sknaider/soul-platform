@@ -24,6 +24,8 @@ def test_version_contract_and_packaged_source_layout():
         for values in project["optional-dependencies"].values()
         for item in values
     )
+    api_text = (ROOT / "src/soul_platform/api.py").read_text()
+    assert f'version="{project["version"]}"' in api_text
 
 
 def test_build_excludes_all_local_distribution_directories():

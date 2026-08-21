@@ -26,6 +26,8 @@ class VerifiedPrincipal:
     actor: str
     key_id: str
     expires_at: int
+    session_id: str = ""
+    audience: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,14 +60,34 @@ class PrincipalTokenIssuer:
     def __init__(self, private_key: Ed25519PrivateKey, key_id: str) -> None:
         self.private_key, self.key_id = private_key, key_id
 
-    def issue(self, tenant: str, actor: str, *, ttl_seconds: int = 300) -> str:
-        if not 1 <= ttl_seconds <= 3600:
+    def issue(
+        self,
+        tenant: str,
+        actor: str,
+        *,
+        ttl_seconds: int = 300,
+        session_id: str = "",
+        audience: str = "",
+    ) -> str:
+        if isinstance(ttl_seconds, bool) or not 1 <= ttl_seconds <= 3600:
             raise ValueError("ttl_seconds must be between 1 and 3600")
+        if not isinstance(session_id, str):
+            raise ValueError("session_id must be a string")
+        if len(session_id) > 256:
+            raise ValueError("session_id must be at most 256 characters")
+        if not isinstance(audience, str):
+            raise ValueError("audience must be a string")
+        if len(audience) > 256:
+            raise ValueError("audience must be at most 256 characters")
         now = int(time.time())
         payload = {
             "actor": actor, "exp": now + ttl_seconds, "iat": now,
             "key_id": self.key_id, "tenant": tenant,
         }
+        if session_id:
+            payload["session_id"] = session_id
+        if audience:
+            payload["audience"] = audience
         data = canonical_json(payload)
         return f"{_encode(data)}.{_encode(self.private_key.sign(data))}"
 
@@ -84,10 +106,30 @@ class PrincipalTokenVerifier:
             payload = json.loads(data)
         except Exception as exc:
             raise AuthenticationDenied("token payload is invalid") from exc
-        if canonical_json(payload) != data or set(payload) != {"actor", "exp", "iat", "key_id", "tenant"}:
+        base_claims = {"actor", "exp", "iat", "key_id", "tenant"}
+        if canonical_json(payload) != data or frozenset(payload) not in {
+            frozenset(base_claims),
+            frozenset(base_claims | {"session_id"}),
+            frozenset(base_claims | {"audience"}),
+            frozenset(base_claims | {"session_id", "audience"}),
+        }:
             raise AuthenticationDenied("token payload is not canonical")
         if not all(isinstance(payload[key], str) and payload[key] for key in ("actor", "key_id", "tenant")):
             raise AuthenticationDenied("token identity is invalid")
+        session_id = payload.get("session_id", "")
+        if (
+            not isinstance(session_id, str)
+            or len(session_id) > 256
+            or ("session_id" in payload and not session_id)
+        ):
+            raise AuthenticationDenied("token session identity is invalid")
+        audience = payload.get("audience", "")
+        if (
+            not isinstance(audience, str)
+            or len(audience) > 256
+            or ("audience" in payload and not audience)
+        ):
+            raise AuthenticationDenied("token audience is invalid")
         if not isinstance(payload["iat"], int) or not isinstance(payload["exp"], int):
             raise AuthenticationDenied("token timestamps are invalid")
         now = int(time.time())
@@ -103,5 +145,10 @@ class PrincipalTokenVerifier:
         if payload["tenant"] != binding.tenant or payload["actor"] != binding.actor:
             raise AuthenticationDenied("token principal does not match its trusted key")
         return VerifiedPrincipal(
-            payload["tenant"], payload["actor"], payload["key_id"], payload["exp"]
+            payload["tenant"],
+            payload["actor"],
+            payload["key_id"],
+            payload["exp"],
+            session_id,
+            audience,
         )

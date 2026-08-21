@@ -1,0 +1,125 @@
+{
+  "broker": {
+    "calls": [
+      {
+        "elapsed_ms": 9117,
+        "model": "gpt-5.6-sol",
+        "output_sha256": "86580b60de1cfbd99bec3ac912c0e9c5bbec931ff73b834aa333afd65772f0ec",
+        "provider": "codex"
+      },
+      {
+        "elapsed_ms": 3627,
+        "model": "claude-opus",
+        "output_sha256": "c03e19a1d99e1cddd808aa3c570b851a3d88dae473dddbe4305c471589278731",
+        "provider": "claude"
+      },
+      {
+        "elapsed_ms": 737,
+        "model": "gemma3:1b-it-qat",
+        "output_sha256": "5f89c768cc2e486a754b35cc82fa430520fc42ddbdfa5ab022cfb1c7579bcfb3",
+        "provider": "gemma"
+      },
+      {
+        "elapsed_ms": 704,
+        "model": "gemma3:1b-it-qat",
+        "output_sha256": "5f89c768cc2e486a754b35cc82fa430520fc42ddbdfa5ab022cfb1c7579bcfb3",
+        "provider": "gemma"
+      }
+    ],
+    "count": 4
+  },
+  "container_security": [
+    {
+      "broker_mount_readonly": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "lab_mount_readonly": true,
+      "network_mode": "none",
+      "no_new_privileges": true,
+      "provider_credentials_in_env": [],
+      "readonly_rootfs": true,
+      "state_mount_writable": true,
+      "user": "1000:1000"
+    },
+    {
+      "broker_mount_readonly": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "lab_mount_readonly": true,
+      "network_mode": "none",
+      "no_new_privileges": true,
+      "provider_credentials_in_env": [],
+      "readonly_rootfs": true,
+      "state_mount_writable": true,
+      "user": "1000:1000"
+    }
+  ],
+  "created_at": "2026-08-21T06:04:22.087584+00:00",
+  "lab_file_sha256": {
+    "README.md": "941ce47f5af0ec9e7e61ecfa9548fb0b548304bc8c63e8a33ec677ca72debd64",
+    "container_probe.py": "6a5c15265681be802ccc2cd76360a043f5a720235f2ad88d3599c552c4904c87",
+    "host_broker.py": "516e18f293b185b5331f746b4846a7b8e31095d8db44b0db41e6f5bed52f7ba7",
+    "run_lab.py": "4edf94afd283f1a6141c0f7f213d16c808e170db360a93bf22470e64ce4156ad",
+    "test_real_models_lab.py": "ceb05a55e5f4615b142569640a562c772195f21ecdd425710f0d772cd27037a5"
+  },
+  "phase1": {
+    "memory_anchor_sha256": "4aee5d4bc4e4ba8d1879925ff7a30dbde113ae21e59e3d563b0c5ec15ac505bd",
+    "negative_auth": {
+      "missing": 401,
+      "wrong": 401
+    },
+    "phase": "cross_model",
+    "results": [
+      {
+        "answer_sha256": "86580b60de1cfbd99bec3ac912c0e9c5bbec931ff73b834aa333afd65772f0ec",
+        "continuity": true,
+        "elapsed_ms": 9117,
+        "generation": 1,
+        "model": "gpt-5.6-sol",
+        "provider": "codex"
+      },
+      {
+        "answer_sha256": "c03e19a1d99e1cddd808aa3c570b851a3d88dae473dddbe4305c471589278731",
+        "continuity": true,
+        "elapsed_ms": 3627,
+        "generation": 2,
+        "model": "claude-opus",
+        "provider": "claude"
+      },
+      {
+        "answer_sha256": "5f89c768cc2e486a754b35cc82fa430520fc42ddbdfa5ab022cfb1c7579bcfb3",
+        "continuity": true,
+        "elapsed_ms": 737,
+        "generation": 3,
+        "model": "gemma3:1b-it-qat",
+        "provider": "gemma"
+      }
+    ],
+    "soul_id": "7f61858a-d0d3-4ca6-83f5-e4a6b3db9830"
+  },
+  "phase2": {
+    "persisted_switches_after": 4,
+    "persisted_switches_before": 3,
+    "phase": "container_restart",
+    "providers": [
+      "codex",
+      "claude",
+      "gemma",
+      "gemma"
+    ],
+    "recall_after_restart": {
+      "answer_sha256": "5f89c768cc2e486a754b35cc82fa430520fc42ddbdfa5ab022cfb1c7579bcfb3",
+      "continuity": true,
+      "elapsed_ms": 704,
+      "generation": 4,
+      "model": "gemma3:1b-it-qat",
+      "provider": "gemma"
+    },
+    "status": "PASS"
+  },
+  "provider_credentials_inside_containers": 0,
+  "schema": "soul.real-model-continuity.receipt.v1",
+  "status": "PASS"
+}

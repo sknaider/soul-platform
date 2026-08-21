@@ -39,6 +39,10 @@ def test_init_is_user_space_idempotent_and_preserves_identity(tmp_path):
     assert settings.embedding_provider == "bge-m3"
     assert settings.embedding_dimensions == 1024
     assert settings.memory_vector_index == "auto"
+    assert settings.t5_mode == "compatibility-single-owner"
+    assert settings.t5_tenant == "local-machine"
+    assert settings.t5_owner_subject == f"local-owner:{settings.machine_soul_id}"
+    assert settings.t5_state_path == root / "MachineSoul.t5-egress.sqlite3"
 
 
 def test_legacy_config_has_only_safe_128d_exact_compatibility(tmp_path):
@@ -58,6 +62,23 @@ def test_legacy_config_has_only_safe_128d_exact_compatibility(tmp_path):
         settings.embedding_dimensions,
         settings.memory_vector_index,
     ) == ("simple", 128, "exact")
+
+
+def test_config_without_memory_egress_section_fails_closed_in_locked_mode(tmp_path):
+    result = initialize(
+        root=tmp_path / "soul",
+        upstream_kind="ollama",
+        upstream_base_url="http://127.0.0.1:11434/v1",
+        upstream_model="brain",
+        enable_autostart=False,
+    )
+    text = result.config.read_text()
+    start, end = text.index("[memory_egress]"), text.index("[upstream]")
+    result.config.write_text(text[:start] + text[end:])
+    settings = ProxySettings.from_toml(result.config)
+    assert settings.t5_mode == "locked"
+    assert settings.t5_tenant == ""
+    assert settings.t5_owner_subject == ""
 
 
 def test_switch_changes_only_brain(tmp_path):
