@@ -16,7 +16,11 @@ from soul_platform.autowire.probe import MAX_DISCOVERY_BYTES, _NoRedirect, get_j
 from soul_platform.autowire.registry import ProviderRegistry, RegistryConflict
 from soul_platform.autowire.types import ProviderCandidate, ProviderState
 from soul_platform.bootstrap import _atomic_config, render_config, switch_upstream
-from soul_platform.mcp_stdio import sync_claude_app_grants, sync_codex_app_grants
+from soul_platform.mcp_stdio import (
+    sync_claude_app_grants,
+    sync_claude_desktop_mcp_config,
+    sync_codex_app_grants,
+)
 from soul_platform.proxy import ProxySettings
 from soul_platform.runtime_attestation import verify_runtime_attestation
 
@@ -134,6 +138,13 @@ class AutoWireManager:
                 )
             except (OSError, ValueError) as exc:
                 errors["claude-app-grant"] = type(exc).__name__
+            try:
+                sync_claude_desktop_mcp_config(
+                    config_path=self.config_path,
+                    server_executable=server_executable,
+                )
+            except (OSError, ValueError) as exc:
+                errors["claude-desktop-config"] = type(exc).__name__
         seen: set[str] = set()
         active_id: str | None = None
         for candidate in candidates:

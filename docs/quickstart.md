@@ -40,13 +40,13 @@ toca tu Python del sistema):
 ./installer/soul-install.sh
 ```
 
-> **Nota de disponibilidad:** `soul-platform 0.5.8` y `soul-framework 0.4.3`
+> **Nota de disponibilidad:** `soul-platform 0.5.9` y `soul-framework 0.4.3`
 > se entregan juntos en un bundle con wheels y SHA-256. El paquete Platform no
 > está publicado en PyPI; usa el bundle o define `SOUL_PACKAGE_SOURCE`.
 > El ZIP de Windows fue probado por efecto: extrae todo y abre
 > `Instalar-SOUL-Windows.bat`; el checksum se valida antes de instalar.
 
-En Platform 0.5.8 el instalador también configura AutoWire en modo `shadow`.
+En Platform 0.5.9 el instalador también configura AutoWire en modo `shadow`.
 Detecta y puede rutear cerebros Ollama locales, pero ningún listener HTTP recibe
 memoria privada: un proceso del mismo usuario podría suplantar el puerto.
 Codex CLI y Claude Code se cablean por MCP stdio local; una entrada `soul-local`

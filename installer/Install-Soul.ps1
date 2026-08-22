@@ -96,7 +96,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.5.8"
+        platform_version = "0.5.9"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -406,6 +406,83 @@ function Test-ClaudeSoulMcpShape([string]$Claude, [string]$Mcp, [string]$Config)
     )
 }
 
+function Sync-ClaudeDesktopMcpConfig([string]$Mcp, [string]$Config) {
+    $desktopDir = Join-Path $env:APPDATA "Claude"
+    $desktopConfig = Join-Path $desktopDir "claude_desktop_config.json"
+    New-Item -ItemType Directory -Path $desktopDir -Force | Out-Null
+    $beforeHash = Get-OptionalFileHash $desktopConfig
+    $backup = Backup-ClientConfig $desktopConfig "claude-desktop"
+    if ($beforeHash -eq "__MISSING__") {
+        $document = [pscustomobject]@{}
+    } else {
+        try {
+            $document = Get-Content -LiteralPath $desktopConfig -Raw | ConvertFrom-Json
+        } catch {
+            throw "HOLD: claude_desktop_config.json no es JSON valido; preservo sus bytes"
+        }
+    }
+    if (-not $document -or $document -isnot [Management.Automation.PSCustomObject]) {
+        throw "HOLD: claude_desktop_config.json no contiene un objeto JSON"
+    }
+    if (-not $document.PSObject.Properties['mcpServers']) {
+        $document | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
+    } elseif ($document.mcpServers -isnot [Management.Automation.PSCustomObject]) {
+        throw "HOLD: mcpServers de Claude Desktop no es un objeto"
+    }
+    $desired = [ordered]@{
+        command = $Mcp
+        args = @("--config", $Config, "--client-id", "claude")
+    }
+    $current = $document.mcpServers.'soul-local'
+    if (
+        $current -and
+        [string]$current.command -eq $Mcp -and
+        ((@($current.args) -join [char]0) -eq (@($desired.args) -join [char]0))
+    ) {
+        return $false
+    }
+    if ($document.mcpServers.PSObject.Properties['soul-local']) {
+        $document.mcpServers.'soul-local' = $desired
+    } else {
+        $document.mcpServers | Add-Member -NotePropertyName 'soul-local' -NotePropertyValue $desired
+    }
+    $json = $document | ConvertTo-Json -Depth 64
+    $temporary = $desktopConfig + ".soul-tmp"
+    [IO.File]::WriteAllText($temporary, $json, (New-Object Text.UTF8Encoding($false)))
+    $wrote = $false
+    try {
+        if ((Get-OptionalFileHash $desktopConfig) -ne $beforeHash) {
+            throw "HOLD: Claude Desktop cambio su config concurrentemente; preservo esos bytes"
+        }
+        if ($beforeHash -eq "__MISSING__") {
+            [IO.File]::Move($temporary, $desktopConfig)
+        } else {
+            [IO.File]::Replace($temporary, $desktopConfig, $null, $true)
+        }
+        $wrote = $true
+        $postHash = Get-OptionalFileHash $desktopConfig
+        $verified = Get-Content -LiteralPath $desktopConfig -Raw | ConvertFrom-Json
+        $entry = $verified.mcpServers.'soul-local'
+        if (
+            -not $entry -or
+            [string]$entry.command -ne $Mcp -or
+            ((@($entry.args) -join [char]0) -ne (@($desired.args) -join [char]0))
+        ) {
+            throw "Claude Desktop no confirmo soul-local en su config"
+        }
+        return $true
+    } catch {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            [IO.File]::Delete($temporary)
+        }
+        if ($wrote) {
+            $postHash = Get-OptionalFileHash $desktopConfig
+            Restore-ClientConfigCas $desktopConfig $backup $beforeHash $postHash "Claude Desktop config"
+        }
+        throw
+    }
+}
+
 function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
     if (-not (Test-Path -LiteralPath $Mcp -PathType Leaf)) {
         throw "Falta soul-mcp-stdio.exe en el paquete instalado"
@@ -495,6 +572,9 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
             if (-not (Assert-ClaudeSoulMcp $claudeCli $Mcp $Config)) {
                 throw "Claude no confirmo el MCP local de SOUL"
             }
+        }
+        if ($claudeAppParents.Count -gt 0) {
+            $null = Sync-ClaudeDesktopMcpConfig $Mcp $Config
         }
     } catch {
         # Do not call `mcp remove` first: the CLI can reserialize B(post-add)
@@ -778,7 +858,7 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.5.8', sys.argv[1], sys.argv[2]),
+    ('soul-platform', '0.5.9', sys.argv[1], sys.argv[2]),
     ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
@@ -911,7 +991,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.5.8 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.5.9 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -952,8 +1032,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.5.8") {
-    throw "Se requiere soul-platform 0.5.8 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.5.9") {
+    throw "Se requiere soul-platform 0.5.9 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"

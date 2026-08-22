@@ -30,7 +30,7 @@ def _requests() -> str:
             "params": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "soul-codex-session-start", "version": "0.5.8"},
+                "clientInfo": {"name": "soul-codex-session-start", "version": "0.5.9"},
             },
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
