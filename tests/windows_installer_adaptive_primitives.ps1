@@ -33,7 +33,7 @@ $root = Join-Path $env:LOCALAPPDATA "SOUL"
 $script:InstalledComponents.Add("first")
 $first = Write-InstallReceipt $root "verified"
 $firstPayload = Get-Content -LiteralPath $first -Raw | ConvertFrom-Json
-if ($firstPayload.platform_version -ne "0.5.10") { throw "first receipt version mismatch" }
+if ($firstPayload.platform_version -ne "0.6.0") { throw "first receipt version mismatch" }
 
 $script:InstalledComponents.Clear()
 $script:InstalledComponents.Add("second")

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
 import secrets
 import sys
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
 
 from soul_platform.autostart import (
     AutostartContract,
@@ -121,6 +122,57 @@ def render_config(settings: ProxySettings) -> str:
     )
 
 
+def _ensure_profile_before_return(settings: ProxySettings) -> dict[str, object]:
+    """Run the async Core bootstrap from every synchronous initialize caller.
+
+    ``initialize`` is also used by async test/application code. Running the
+    coroutine in a short dedicated thread in that case preserves the stronger
+    invariant that the function never returns an empty machine soul.
+    """
+
+    from soul_platform.living_soul import ensure_initial_profile
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(ensure_initial_profile(settings))
+    result: list[dict[str, object]] = []
+    failure: list[BaseException] = []
+
+    def runner() -> None:
+        try:
+            result.append(asyncio.run(ensure_initial_profile(settings)))
+        except BaseException as exc:  # propagate the original failure to the caller
+            failure.append(exc)
+
+    worker = threading.Thread(target=runner, name="soul-profile-bootstrap")
+    worker.start()
+    worker.join()
+    if failure:
+        raise failure[0]
+    if len(result) != 1:
+        raise RuntimeError("SOUL profile bootstrap returned no result")
+    return result[0]
+
+
+def _require_owner_tty_confirmation(*, expected_digest: str, subject: str) -> None:
+    """Require an interactive local-owner act before a canonical mutation."""
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise PermissionError(f"{subject} approval requires an interactive owner TTY")
+    sys.stdout.write(
+        f"Owner approval for {subject}. Retype exact digest {expected_digest}: "
+    )
+    sys.stdout.flush()
+    supplied = sys.stdin.readline()
+    if not supplied:
+        raise PermissionError(f"{subject} approval was not confirmed")
+    import hmac
+
+    if not hmac.compare_digest(supplied.strip(), expected_digest):
+        raise PermissionError(f"{subject} approval digest confirmation failed")
+
+
 def _atomic_config(path: Path, content: str) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -195,6 +247,9 @@ def initialize(
             if token_created and token.exists() and not token.is_symlink():
                 token.unlink()
             raise
+    # ``initialize`` itself owns this invariant. Installers may repeat the
+    # check, but no direct Python/CLI caller can receive an empty MachineSoul.
+    _ensure_profile_before_return(settings)
     autostart = None
     if enable_autostart:
         contract = AutostartContract.load(config, python=python)
@@ -334,6 +389,33 @@ def main() -> None:
     switch.add_argument("--model", required=True)
     upgrade = actions.add_parser("upgrade-config")
     upgrade.add_argument("--config")
+    profile = actions.add_parser("ensure-profile")
+    profile.add_argument("--config")
+    consent = actions.add_parser("context-consent")
+    consent.add_argument("operation", choices=("grant", "revoke", "status"))
+    consent.add_argument("--client", choices=("codex", "claude"), required=True)
+    consent.add_argument("--ttl-days", type=int, default=365)
+    consent.add_argument("--config")
+    candidates = actions.add_parser("memory-candidates")
+    candidates.add_argument("operation", choices=("list", "approve"))
+    candidates.add_argument("--candidate-id")
+    candidates.add_argument("--digest")
+    candidates.add_argument("--status", default="pending")
+    candidates.add_argument("--limit", type=int, default=50)
+    candidates.add_argument("--config")
+    proposals = actions.add_parser("profile-proposals")
+    proposals.add_argument("operation", choices=("list", "propose", "approve"))
+    proposals.add_argument(
+        "--kind", choices=("identity", "ocean", "rule", "relationship")
+    )
+    proposals.add_argument("--patch-json")
+    proposals.add_argument("--source-event-id")
+    proposals.add_argument("--client-id", default="local-owner-cli")
+    proposals.add_argument("--proposal-id")
+    proposals.add_argument("--digest")
+    proposals.add_argument("--status", default="pending")
+    proposals.add_argument("--limit", type=int, default=50)
+    proposals.add_argument("--config")
     for name in ("disable-autostart", "uninstall"):
         disable = actions.add_parser(name)
         disable.add_argument("--config")
@@ -371,6 +453,126 @@ def main() -> None:
         print(f"config={config}")
         print(f"memory_egress={result.t5_mode}")
         print(f"machine_soul_id={result.machine_soul_id} (unchanged)")
+    elif args.action == "ensure-profile":
+        from soul_platform.living_soul import ensure_initial_profile
+
+        config = (
+            Path(args.config).expanduser().resolve()
+            if args.config
+            else default_root() / "proxy.toml"
+        )
+        settings = ProxySettings.from_toml(config)
+        result = asyncio.run(ensure_initial_profile(settings))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    elif args.action == "context-consent":
+        from soul_platform.context_consent import (
+            issue_context_consent,
+            prepare_context_consent,
+            revoke_context_consent,
+            verify_context_consent,
+        )
+
+        config = (
+            Path(args.config).expanduser().resolve()
+            if args.config
+            else default_root() / "proxy.toml"
+        )
+        settings = ProxySettings.from_toml(config)
+        if args.operation == "grant":
+            prepared = prepare_context_consent(
+                settings, args.client, ttl_days=args.ttl_days
+            )
+            print(json.dumps(prepared, ensure_ascii=False, sort_keys=True))
+            _require_owner_tty_confirmation(
+                expected_digest=prepared["confirmation_sha256"],
+                subject=f"{args.client} private-context consent",
+            )
+            result = issue_context_consent(
+                settings,
+                args.client,
+                ttl_days=args.ttl_days,
+                expected_snapshot_sha256=prepared["context_snapshot_sha256"],
+            )
+        elif args.operation == "revoke":
+            result = revoke_context_consent(settings, args.client)
+        else:
+            result = verify_context_consent(settings, args.client)
+        print(json.dumps({"valid": result is not None, "grant": result}, ensure_ascii=False, sort_keys=True))
+    elif args.action == "memory-candidates":
+        from soul_platform.living_soul import (
+            list_memory_candidates,
+            promote_memory_candidate,
+        )
+
+        config = (
+            Path(args.config).expanduser().resolve()
+            if args.config
+            else default_root() / "proxy.toml"
+        )
+        settings = ProxySettings.from_toml(config)
+        if args.operation == "list":
+            result = list_memory_candidates(settings, status=args.status, limit=args.limit)
+        else:
+            if not args.candidate_id or not args.digest:
+                raise SystemExit("approve requires --candidate-id and --digest")
+            _require_owner_tty_confirmation(
+                expected_digest=args.digest, subject="memory candidate"
+            )
+            result = asyncio.run(
+                promote_memory_candidate(
+                    settings,
+                    candidate_id=args.candidate_id,
+                    expected_sha256=args.digest,
+                )
+            )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    elif args.action == "profile-proposals":
+        from soul_platform.living_soul import (
+            approve_profile_proposal,
+            list_profile_proposals,
+            propose_profile_change,
+        )
+
+        config = (
+            Path(args.config).expanduser().resolve()
+            if args.config
+            else default_root() / "proxy.toml"
+        )
+        settings = ProxySettings.from_toml(config)
+        if args.operation == "list":
+            result = list_profile_proposals(
+                settings, status=args.status, limit=args.limit
+            )
+        elif args.operation == "propose":
+            if not args.kind or not args.patch_json or not args.source_event_id:
+                raise SystemExit(
+                    "propose requires --kind, --patch-json and --source-event-id"
+                )
+            try:
+                patch = json.loads(args.patch_json)
+            except json.JSONDecodeError as exc:
+                raise SystemExit("--patch-json must be valid JSON") from exc
+            result = propose_profile_change(
+                settings,
+                client_id=args.client_id,
+                source_event_id=args.source_event_id,
+                change_kind=args.kind,
+                patch=patch,
+            )
+        else:
+            if not args.proposal_id or not args.digest:
+                raise SystemExit("approve requires --proposal-id and --digest")
+            _require_owner_tty_confirmation(
+                expected_digest=args.digest, subject="profile proposal"
+            )
+            result = asyncio.run(
+                approve_profile_proposal(
+                    settings,
+                    proposal_id=args.proposal_id,
+                    expected_sha256=args.digest,
+                )
+            )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:
         config = (
             Path(args.config).expanduser().resolve()

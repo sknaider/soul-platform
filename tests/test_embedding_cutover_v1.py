@@ -32,6 +32,10 @@ def _sha(path: Path) -> str:
 
 
 def _db(path: Path, marker: str) -> None:
+    # Cutover exercises a deliberately legacy database.  initialize() now
+    # creates a live profile, so rebuild this temporary fixture from a clean
+    # Core schema instead of accidentally comparing seeded vs unseeded stores.
+    path.unlink(missing_ok=True)
     with sqlite3.connect(path) as connection:
         connection.executescript(SCHEMA_SQL)
         connection.execute("CREATE TABLE marker(value TEXT NOT NULL)")
@@ -76,11 +80,21 @@ def _legacy_install(tmp_path: Path):
     start, end = text.index("[embedding]"), text.index("[proxy]")
     result.config.write_text(text[:start] + text[end:])
     _db(result.soul_db, "original-128")
+    # Recreate the live profile that a real initialized legacy installation
+    # carries.  The migration candidate must start with identical non-vector
+    # content or the cutover verifier correctly rejects it.
+    initialize(
+        root=result.root,
+        upstream_kind="ollama",
+        upstream_base_url="http://127.0.0.1:11434/v1",
+        upstream_model="brain",
+        enable_autostart=False,
+    )
     with sqlite3.connect(result.soul_db) as connection:
         connection.execute("PRAGMA user_version=128")
     candidate = result.root / "MachineSoul.bge-m3.candidate.db"
     checkpoint = result.root / "MachineSoul.bge-m3.checkpoint.json"
-    _db(candidate, "original-128")
+    shutil.copy2(result.soul_db, candidate)
     with sqlite3.connect(candidate) as connection:
         connection.execute("PRAGMA user_version=1024")
     return result, candidate, checkpoint

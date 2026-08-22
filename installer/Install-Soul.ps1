@@ -8,6 +8,7 @@ param(
     [string]$BootstrapModel = $(if ($env:SOUL_BOOTSTRAP_MODEL) { $env:SOUL_BOOTSTRAP_MODEL } else { "gemma3:1b" }),
     [switch]$RequireBundledWheel,
     [switch]$TrustCurrentOllama,
+    [switch]$ConsentCloudMemory,
     [switch]$NoBootstrap,
     [switch]$NoMachine,
     [switch]$NoTray,
@@ -96,7 +97,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.5.10"
+        platform_version = "0.6.0"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -143,6 +144,18 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     foreach ($line in $result.Output) { Write-Host ([string]$line) }
     if ($result.ExitCode -ne 0) {
         throw "El comando fallo con codigo $($result.ExitCode): $File $($Arguments -join ' ')"
+    }
+}
+
+function Invoke-OwnerInteractive([string]$File, [string[]]$Arguments) {
+    if (-not [Environment]::UserInteractive -or
+        [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        throw "HOLD: el consentimiento privado requiere una consola interactiva del propietario."
+    }
+    & $File @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "El consentimiento privado fallo con codigo $exitCode."
     }
 }
 
@@ -330,7 +343,7 @@ function Assert-ClaudeSoulMcp([string]$Claude, [string]$Mcp, [string]$Config) {
     )
 }
 
-function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$Config) {
+function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$Config, [bool]$EnablePromptRecall = $false) {
     if (-not (Test-Path -LiteralPath $HookExe -PathType Leaf)) {
         throw "Falta soul-codex-session-start.exe en el paquete instalado"
     }
@@ -369,6 +382,20 @@ function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$
             hooks = @($handler)
         })
         $document.hooks | Add-Member -NotePropertyName SessionStart -NotePropertyValue $sessionStart -Force
+        $promptGroups = @($document.hooks.UserPromptSubmit)
+        $promptPreserved = @($promptGroups | Where-Object {
+            $owned = @($_.hooks | Where-Object {
+                ([string]$_.commandWindows) -match 'soul-codex-session-start\.exe'
+            })
+            $owned.Count -eq 0
+        })
+        if ($EnablePromptRecall) {
+            $promptPreserved = @($promptPreserved) + @([ordered]@{
+                matcher = ".*"
+                hooks = @($handler)
+            })
+        }
+        $document.hooks | Add-Member -NotePropertyName UserPromptSubmit -NotePropertyValue @($promptPreserved) -Force
         $temporary = "$hooksPath.soul-$PID.tmp"
         $json = $document | ConvertTo-Json -Depth 20
         $utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -381,6 +408,13 @@ function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$
         })
         if ($ownedLive.Count -ne 1) {
             throw "Codex SessionStart hook no quedo cableado exactamente una vez"
+        }
+        $ownedPromptLive = @($live.hooks.UserPromptSubmit | ForEach-Object { $_.hooks } | Where-Object {
+            ([string]$_.commandWindows) -eq $command
+        })
+        $expectedPromptCount = $(if ($EnablePromptRecall) { 1 } else { 0 })
+        if ($ownedPromptLive.Count -ne $expectedPromptCount) {
+            throw "Codex UserPromptSubmit hook no coincide con el consentimiento"
         }
     } catch {
         $currentHash = Get-OptionalFileHash $hooksPath
@@ -396,7 +430,7 @@ function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$
     return $hooksPath
 }
 
-function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]$Config) {
+function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]$Config, [bool]$EnablePromptRecall = $false) {
     if (-not (Test-Path -LiteralPath $HookExe -PathType Leaf)) {
         throw "Falta soul-codex-session-start.exe en el paquete instalado"
     }
@@ -438,6 +472,22 @@ function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]
         hooks = @($handler)
     })
     $document.hooks | Add-Member -NotePropertyName SessionStart -NotePropertyValue $sessionStart -Force
+    $promptGroups = @($document.hooks.UserPromptSubmit)
+    $promptPreserved = @($promptGroups | Where-Object {
+        $owned = @($_.hooks | Where-Object {
+            [string]$_.type -eq "command" -and
+            ([string]$_.command) -match 'soul-codex-session-start\.exe' -and
+            ([string]$_.command) -match '--client-id claude'
+        })
+        $owned.Count -eq 0
+    })
+    if ($EnablePromptRecall) {
+        $promptPreserved = @($promptPreserved) + @([ordered]@{
+            matcher = ".*"
+            hooks = @($handler)
+        })
+    }
+    $document.hooks | Add-Member -NotePropertyName UserPromptSubmit -NotePropertyValue @($promptPreserved) -Force
     $temporary = "$settingsPath.soul-$PID.tmp"
     $json = $document | ConvertTo-Json -Depth 64
     [IO.File]::WriteAllText($temporary, $json, (New-Object Text.UTF8Encoding($false)))
@@ -455,6 +505,13 @@ function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]
         })
         if ($ownedLive.Count -ne 1) {
             throw "Claude SessionStart hook no quedo cableado exactamente una vez"
+        }
+        $ownedPromptLive = @($live.hooks.UserPromptSubmit | ForEach-Object { $_.hooks } | Where-Object {
+            [string]$_.type -eq "command" -and [string]$_.command -eq $command
+        })
+        $expectedPromptCount = $(if ($EnablePromptRecall) { 1 } else { 0 })
+        if ($ownedPromptLive.Count -ne $expectedPromptCount) {
+            throw "Claude UserPromptSubmit hook no coincide con el consentimiento"
         }
     } catch {
         if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) }
@@ -929,7 +986,7 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.5.10', sys.argv[1], sys.argv[2]),
+    ('soul-platform', '0.6.0', sys.argv[1], sys.argv[2]),
     ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
@@ -1062,7 +1119,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.5.10 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.6.0 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -1103,8 +1160,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.5.10") {
-    throw "Se requiere soul-platform 0.5.10 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.6.0") {
+    throw "Se requiere soul-platform 0.6.0 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"
@@ -1249,6 +1306,12 @@ if (-not $Check -and -not $NoMachine) {
     }
 }
 
+if (-not $Check -and -not $NoMachine -and (Test-Path -LiteralPath $soulConfig -PathType Leaf)) {
+    Step "Inicializando el perfil vivo sin sobrescribir identidad existente"
+    Invoke-Checked $machine @("ensure-profile", "--config", $soulConfig)
+    Good "Perfil vivo verificado de forma aditiva e idempotente"
+}
+
 if (-not $NoTray -and -not $NoMachine) {
     Step "Verificando e instalando SOUL Tray al iniciar sesion"
     Invoke-Checked $tray @("--headless-check")
@@ -1283,13 +1346,31 @@ if (-not $NoMachine -and -not $Check) {
     } else {
         Good ("Clientes SOUL verificados: " + ($wiredClients -join ", "))
         if ($wiredClients -contains "codex") {
-            $codexHooks = Install-CodexSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig
+            if ($ConsentCloudMemory) {
+                Invoke-OwnerInteractive $machine @("context-consent", "grant", "--client", "codex", "--config", $soulConfig)
+            }
+            $codexConsentProbe = Invoke-NativeCapture $machine @("context-consent", "status", "--client", "codex", "--config", $soulConfig)
+            $codexConsent = $false
+            if ($codexConsentProbe.ExitCode -eq 0) {
+                try { $codexConsent = [bool](($codexConsentProbe.Output -join "`n" | ConvertFrom-Json).valid) } catch { $codexConsent = $false }
+            }
+            $codexHooks = Install-CodexSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig $codexConsent
             Good "Codex SessionStart cableado: SOUL se carga antes del primer mensaje"
+            if ($codexConsent) { Good "Codex UserPromptSubmit cableado con consentimiento vigente" }
             Write-Warning "Codex pedira confiar una sola vez en el hook local de $codexHooks; revisalo en /hooks. Despues arranca automatico."
         }
         if ($wiredClients -contains "claude") {
-            $claudeHooks = Install-ClaudeSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig
+            if ($ConsentCloudMemory) {
+                Invoke-OwnerInteractive $machine @("context-consent", "grant", "--client", "claude", "--config", $soulConfig)
+            }
+            $claudeConsentProbe = Invoke-NativeCapture $machine @("context-consent", "status", "--client", "claude", "--config", $soulConfig)
+            $claudeConsent = $false
+            if ($claudeConsentProbe.ExitCode -eq 0) {
+                try { $claudeConsent = [bool](($claudeConsentProbe.Output -join "`n" | ConvertFrom-Json).valid) } catch { $claudeConsent = $false }
+            }
+            $claudeHooks = Install-ClaudeSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig $claudeConsent
             Good "Claude SessionStart cableado: SOUL se carga antes del primer mensaje"
+            if ($claudeConsent) { Good "Claude UserPromptSubmit cableado con consentimiento vigente" }
         }
     }
 }

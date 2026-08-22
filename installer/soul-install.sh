@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PKG="soul-platform"
-PLATFORM_VERSION="0.5.10"
+PLATFORM_VERSION="0.6.0"
 CORE_VERSION="0.4.3"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 VENV="${SOUL_VENV:-$HOME/.soul/venv}"
@@ -29,6 +29,7 @@ MACHINE_MODEL="${SOUL_MODEL:-}"
 MACHINE_KIND="${SOUL_UPSTREAM_KIND:-ollama}"
 MACHINE_BASE_URL="${SOUL_UPSTREAM_URL:-http://127.0.0.1:11434/v1}"
 INIT_MACHINE=1
+CONSENT_CLOUD_MEMORY=0
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=11
 
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
     --kind) MACHINE_KIND="${2:-}"; shift 2;;
     --base-url) MACHINE_BASE_URL="${2:-}"; shift 2;;
     --no-machine) INIT_MACHINE=0; shift;;
+    --consent-cloud-memory) CONSENT_CLOUD_MEMORY=1; shift;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) die "unknown arg: $1 (see --help)";;
   esac
@@ -284,6 +286,11 @@ profile = (
 assert profile == ("bge-m3", 1024, "bge-m3", "auto")
 PY
   ok "config MachineSoul verificada: BGE-M3/1024/auto"
+  AUTOWIRE="$VENV/bin/soul-autowire"
+  [ -x "$AUTOWIRE" ] || die "falta soul-autowire en el paquete instalado"
+  "$AUTOWIRE" --root "$CHECK_SOUL_ROOT" status >/dev/null \
+    || die "AutoWire no puede leer su estado persistido"
+  ok "AutoWire shadow verificable"
 fi
 
 if [ "$CHECK_ONLY" -eq 0 ] && [ "$INIT_MACHINE" -eq 1 ]; then
@@ -402,6 +409,30 @@ PY
       trap - EXIT INT TERM
     fi
     ok "alma persistente + autostart verificados"
+    "$VENV/bin/soul-machine" ensure-profile --config "$SOUL_CONFIG" \
+      || die "no pude inicializar/verificar el perfil vivo"
+    ok "perfil vivo inicializado sin sobrescribir identidad existente"
+    AUTOWIRE="$VENV/bin/soul-autowire"
+    [ -x "$AUTOWIRE" ] || die "falta soul-autowire en el paquete instalado"
+    # Unix has the same discovery/autostart lifecycle as Windows. Runtime trust
+    # remains deliberately fail-closed until Unix gains an OS-backed process
+    # attestation equivalent; shadow discovery never changes the active brain.
+    "$AUTOWIRE" --root "$SOUL_ROOT" reconcile >/dev/null \
+      || die "AutoWire no pudo reconciliar cerebros locales"
+    "$AUTOWIRE" --root "$SOUL_ROOT" install-autostart >/dev/null \
+      || die "AutoWire no pudo instalar su autostart per-user"
+    "$AUTOWIRE" --root "$SOUL_ROOT" status >/dev/null \
+      || die "AutoWire no pudo verificar su estado"
+    ok "AutoWire shadow instalado y verificado al arranque"
+    if [ "$CONSENT_CLOUD_MEMORY" -eq 1 ]; then
+      [ -t 0 ] && [ -t 1 ] \
+        || die "el consentimiento privado requiere una consola interactiva del propietario"
+      "$VENV/bin/soul-machine" context-consent grant --client codex --config "$SOUL_CONFIG" \
+        || die "no pude emitir el consentimiento byte-bound para Codex"
+      "$VENV/bin/soul-machine" context-consent grant --client claude --config "$SOUL_CONFIG" \
+        || die "no pude emitir el consentimiento byte-bound para Claude"
+      ok "consentimiento cloud byte-bound emitido para Codex y Claude"
+    fi
   else
     warn "paquete instalado, pero no detecté un modelo Ollama para iniciar el proxy"
     warn "cuando tengas uno: $VENV/bin/soul-machine init --model NOMBRE_DEL_MODELO"

@@ -18,7 +18,7 @@ ver el [README](../README.md). Esto es solo el arranque.
 - **Un modelo local corriendo en Ollama** (ej. `ollama pull gemma3:1b-it-qat`).
   El alma funciona sin modelo, pero para *conversar* necesitás uno.
 
-> **Alcance de Platform 0.4 / proxy v1 (honesto):** solo cerebros **locales**.
+> **Alcance de Platform 0.6 / proxy v1 (honesto):** solo cerebros **locales**.
 > **Ollama** está verificado por efecto. **LM Studio** es un endpoint compatible
 > pero todavía sin verificar en un host con LM Studio corriendo. Los modelos
 > **remotos (ej. Grok en la nube) están deshabilitados a propósito** en v1 — el
@@ -40,19 +40,21 @@ toca tu Python del sistema):
 ./installer/soul-install.sh
 ```
 
-> **Nota de disponibilidad:** `soul-platform 0.5.10` y `soul-framework 0.4.3`
+> **Nota de disponibilidad:** `soul-platform 0.6.0` y `soul-framework 0.4.3`
 > se entregan juntos en un bundle con wheels y SHA-256. El paquete Platform no
 > está publicado en PyPI; usa el bundle o define `SOUL_PACKAGE_SOURCE`.
 > El ZIP de Windows fue probado por efecto: extrae todo y abre
 > `Instalar-SOUL-Windows.bat`; el checksum se valida antes de instalar.
 
-En Platform 0.5.10 el instalador también configura AutoWire en modo `shadow`.
+En Platform 0.6.0 el instalador también configura AutoWire en modo `shadow`.
 Detecta y puede rutear cerebros Ollama locales, pero ningún listener HTTP recibe
 memoria privada: un proceso del mismo usuario podría suplantar el puerto.
-Codex CLI y Claude Code se cablean por MCP stdio local; una entrada `soul-local`
-previa y distinta produce `HOLD` en vez de ser sobrescrita. La detección de una
-API o listener compatible nunca equivale a consentimiento ni activa egreso
-cloud.
+En **Windows**, Codex CLI, Codex App, Claude Code y Claude Desktop se cablean
+por MCP stdio local; una entrada `soul-local` previa y distinta produce `HOLD`
+en vez de ser sobrescrita. En Linux/macOS el bundle instala el runtime y el
+watcher AutoWire en shadow, pero no afirma todavía attestation ni auto-cableado
+privado equivalente al de Windows. La detección de una API o listener compatible
+nunca equivale a consentimiento ni activa egreso cloud.
 
 El despliegue administrado puede añadir `-TrustCurrentOllama` al instalador.
 Ese switch es explícito: liga el listener Ollama vivo al usuario y al hash de
@@ -101,10 +103,11 @@ soul-machine switch-brain \
 ## 5. Probar que de verdad recuerda (la prueba estrella)
 
 1. Un cliente confiable guarda la conversación con `X-Soul-Remember: true` y
-   promueve el hecho revisado con
+   propone el hecho con
    `"soul_memory":{"content":"La comida favorita del usuario es ...","importance":8}`.
    La conversación y el hecho son capas separadas: una pregunta nunca se vuelve
-   un hecho por sí sola.
+   un hecho por sí sola. Revisá `soul-machine memory-candidates list` y aprobá
+   localmente el digest exacto antes de que entre a memoria canónica.
 2. Cambiá de cerebro con `switch-brain` (o reiniciá la máquina).
 3. Volvé a preguntar: **lo sigue sabiendo.** El cerebro cambió; el alma no.
 

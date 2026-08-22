@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import gzip
 import hashlib
 import importlib.metadata as metadata
 import json
@@ -31,7 +30,7 @@ from build_windows_bundle import build_bundle, build_unix_bundle  # noqa: E402
 RELEASE_EPOCH = 1_580_601_600
 BUILD_VERSION = "1.5.0"
 HATCHLING_VERSION = "1.32.0"
-RECEIPT_SCHEMA = "soul.platform-release.v1"
+RECEIPT_SCHEMA = "soul.platform-release.v2"
 
 
 def _sha256(path: Path) -> str:
@@ -110,12 +109,59 @@ def _artifact_record(path: Path) -> dict[str, object]:
     }
 
 
+def _git_source_record(root: Path, *, required: bool) -> dict[str, str] | None:
+    """Bind a release to one clean Git commit and tree when requested."""
+    if not (root / ".git").exists():
+        if required:
+            raise RuntimeError("canonical release requires a Git worktree")
+        return None
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if required:
+            raise RuntimeError("canonical release requires a Git worktree") from None
+        return None
+    if Path(top).resolve() != root.resolve():
+        raise RuntimeError("project root must be the Git worktree root")
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout
+    if status:
+        raise RuntimeError("canonical release requires a clean Git worktree")
+    commit = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    return {"git_commit": commit, "git_tree": tree}
+
+
 def build_release(
     *,
     root: Path,
     core_wheel: Path,
     wheelhouse: Path,
     output: Path,
+    require_clean_git: bool = False,
 ) -> dict[str, object]:
     """Build all four artifacts and atomically publish one receipt-bound directory."""
     root = _regular_directory(root, "project root")
@@ -123,6 +169,7 @@ def build_release(
     core_wheel = _regular_file(core_wheel, "SOUL Core wheel")
     wheelhouse = _regular_directory(wheelhouse, "Windows wheelhouse")
     output = _prepare_output(output)
+    source = _git_source_record(root, required=require_clean_git)
     project = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     if project.get("build-system", {}).get("requires") != [
         f"hatchling=={HATCHLING_VERSION}"
@@ -202,6 +249,8 @@ def build_release(
             },
             "artifacts": artifacts,
         }
+        if source is not None:
+            receipt["source"] = source
         receipt_path = stage / f"SOUL-Platform-{version}-release-receipt.json"
         receipt_path.write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -235,6 +284,7 @@ def main() -> int:
         core_wheel=args.core_wheel,
         wheelhouse=args.wheelhouse,
         output=args.output,
+        require_clean_git=True,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0

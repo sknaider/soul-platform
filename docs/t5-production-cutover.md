@@ -25,6 +25,12 @@ multi-user access additionally requires a short-lived Ed25519 principal token
   same OS UID. Such deployments must run the proxy/sidecar under a dedicated
   service identity or put provenance behind an equivalent database-role
   boundary.
+- MCP consent and candidate review are cooperative controls, not a sandbox for
+  a coding agent that already has arbitrary shell access as the owner. TTY
+  confirmation blocks accidental/headless calls but is not cryptographic user
+  presence: a hostile same-UID process can synthesize a pseudo-terminal. Do not
+  claim prompt-injection-resistant custody without a dedicated broker identity
+  plus independent owner presence (for example Windows Hello/FIDO-backed UI).
 
 ## Safe cutover
 

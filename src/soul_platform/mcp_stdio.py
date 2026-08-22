@@ -328,6 +328,24 @@ def _migrate_v1_grants(
     }
 
 
+def _write_exact_grant_backup(path: Path, raw_bytes: bytes, label: str) -> Path:
+    digest = hashlib.sha256(raw_bytes).hexdigest()
+    backup = path.with_name(f"{path.name}.{label}.{digest[:16]}.bak")
+    if backup.exists():
+        if backup.is_symlink() or not backup.is_file() or backup.read_bytes() != raw_bytes:
+            raise ValueError("client grant migration backup collision")
+        return backup
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, raw_bytes)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if os.name != "nt":
+        os.chmod(backup, 0o600)
+    return backup
+
+
 def ensure_client_grants(
     settings: ProxySettings, *, allow_v1_migration: bool = False
 ) -> Path:
@@ -559,7 +577,16 @@ def enroll_client(
         "launch_digest": _launch_digest(
             server_executable=str(server), config_path=config_path, client_id=client_id
         ),
-        "scopes": ["boot", "memory.search", "memory.store"],
+        # Model-facing clients may read the public boot projection, search
+        # approved memory, and stage candidates. They never receive canonical
+        # memory/profile mutation authority.
+        "scopes": [
+            "boot.public",
+            "boot.private",
+            "memory.search.private",
+            "memory.propose",
+            "profile.propose",
+        ],
         "enrolled_unix_ms": enrolled_unix_ms,
     }
     path = _grant_file(settings)
@@ -588,6 +615,29 @@ def enroll_client(
             raise ValueError("client grant store differs from the installed machine soul")
         existing = raw["clients"].get(client_id)
         if isinstance(existing, dict):
+            upgradable_scope_sets = (
+                ["boot", "memory.search", "memory.store"],
+                [
+                    "boot.public",
+                    "boot.private",
+                    "memory.search.private",
+                    "memory.propose",
+                ],
+            )
+            scopes_upgraded = False
+            prior_scopes = existing.get("scopes")
+            if rotate_existing and prior_scopes in upgradable_scope_sets:
+                # Exact, owner-controlled upgrade from the only historical
+                # model-facing scope sets. This removes canonical write access
+                # or adds proposal-only profile authority; arbitrary scope
+                # changes remain immutable and fail closed.
+                _write_exact_grant_backup(path, raw_bytes, "scopes")
+                existing = dict(existing)
+                existing["previous_scopes"] = prior_scopes
+                existing["scopes"] = entry["scopes"]
+                existing["scopes_rotated_unix_ms"] = enrolled_unix_ms
+                raw["clients"][client_id] = existing
+                scopes_upgraded = True
             existing_bindings = _entry_parent_bindings(existing)
             normalized_parent = os.path.normcase(str(parent))
             matching = next(
@@ -611,6 +661,8 @@ def enroll_client(
                 and matching["sha256"] == binding["sha256"]
                 and all(existing.get(field) == entry.get(field) for field in immutable_fields)
             ):
+                if scopes_upgraded:
+                    _atomic_json(path, raw)
                 return existing
             stable_fields = (
                 "enabled",
@@ -947,13 +999,74 @@ def _soul_config(settings: ProxySettings) -> SoulConfig:
 
 
 async def _run_tool(
-    settings: ProxySettings, name: str, arguments: dict[str, Any]
+    settings: ProxySettings,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    client_id: str = "unknown",
+    session_id: str = "",
 ) -> dict[str, Any]:
     config = _soul_config(settings)
+    if name == "soul_boot_context":
+        from soul_platform.living_soul import public_boot_projection, public_boot_text
+
+        projection = await public_boot_projection(settings)
+        return {
+            "content": [{"type": "text", "text": public_boot_text(projection)}],
+            "structuredContent": projection,
+        }
+    if name == "soul_private_boot_context":
+        from soul_platform.living_soul import private_boot_context
+
+        content, projection = await private_boot_context(settings)
+        return {
+            "content": [{"type": "text", "text": content}],
+            "structuredContent": projection,
+        }
+    if name == "soul_memory_propose":
+        from soul_platform.living_soul import propose_memory_candidate
+
+        proposal = propose_memory_candidate(
+            settings,
+            client_id=client_id,
+            source_event_id=arguments.get("source_event_id"),
+            content=arguments.get("content"),
+            importance=arguments.get("importance", 5),
+            provenance={
+                "session_id": arguments.get("session_id", ""),
+                "turn_id": arguments.get("turn_id", ""),
+                "surface": arguments.get("surface", "mcp"),
+            },
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"candidate:{proposal['candidate_id']}:{proposal['status']}",
+                }
+            ],
+            "structuredContent": proposal,
+        }
+    if name == "soul_profile_propose":
+        from soul_platform.living_soul import propose_profile_change
+
+        proposal = propose_profile_change(
+            settings,
+            client_id=client_id,
+            source_event_id=arguments.get("source_event_id"),
+            change_kind=arguments.get("change_kind"),
+            patch=arguments.get("patch"),
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"profile-proposal:{proposal['proposal_id']}:{proposal['status']}",
+                }
+            ],
+            "structuredContent": proposal,
+        }
     async with Soul.create(settings.soul_name, config=config) as soul:
-        if name == "soul_boot_context":
-            content = await soul.boot()
-            return {"content": [{"type": "text", "text": content}]}
         if name == "soul_memory_search":
             query = arguments.get("query")
             limit = arguments.get("limit", 4)
@@ -962,6 +1075,36 @@ async def _run_tool(
             if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 8:
                 raise ValueError("limit must be an integer from 1 to 8")
             hits = await soul.memory.search(query.strip(), limit=limit)
+            # Retrieval is not authorization.  Every private excerpt released
+            # to an MCP/cloud client must cross the same durable T5 egress
+            # boundary as the OpenAI-compatible proxy.
+            from soul_platform.t5_memory_egress import SQLiteT5EgressStore
+
+            if settings.t5_mode == "compatibility-single-owner":
+                egress = SQLiteT5EgressStore(settings.t5_state_path)
+                await egress.initialize()
+                await egress.bind_legacy_memories(
+                    soul_id=settings.machine_soul_id,
+                    memory_ids=[hit.memory.id for hit in hits],
+                    tenant=settings.t5_tenant,
+                    owner_subject=settings.t5_owner_subject,
+                )
+                decision = await egress.evaluate(
+                    soul_id=settings.machine_soul_id,
+                    tenant=settings.t5_tenant,
+                    session_id=session_id or f"mcp:{client_id}",
+                    interlocutor=settings.t5_owner_subject,
+                    memory_ids=[hit.memory.id for hit in hits],
+                )
+                allowed_ids = set(decision.allowed_ids)
+                hits = [hit for hit in hits if str(hit.memory.id) in allowed_ids]
+                egress_reason = decision.reason
+            else:
+                # An MCP parent binding proves the application binary, not the
+                # human interlocutor.  Enforced multi-owner installations need
+                # an authenticated principal and therefore fail closed here.
+                hits = []
+                egress_reason = "locked-no-verified-interlocutor"
             payload = [
                 {
                     "id": str(hit.memory.id),
@@ -976,29 +1119,7 @@ async def _run_tool(
                 "content": [
                     {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
                 ],
-                "structuredContent": {"memories": payload},
-            }
-        if name == "soul_memory_store":
-            content = arguments.get("content")
-            importance = arguments.get("importance", 5)
-            if (
-                not isinstance(content, str)
-                or not 1 <= len(content.strip()) <= 4096
-                or "?" in content
-            ):
-                raise ValueError("content must be a declarative fact up to 4096 characters")
-            if (
-                not isinstance(importance, int)
-                or isinstance(importance, bool)
-                or not 1 <= importance <= 10
-            ):
-                raise ValueError("importance must be an integer from 1 to 10")
-            memory_id = await soul.memory.store(
-                content.strip(), importance=importance, scope="private"
-            )
-            return {
-                "content": [{"type": "text", "text": f"stored:{memory_id}"}],
-                "structuredContent": {"memory_id": str(memory_id)},
+                "structuredContent": {"memories": payload, "egress": egress_reason},
             }
     raise ValueError("unknown SOUL tool")
 
@@ -1007,6 +1128,15 @@ TOOLS = [
     {
         "name": "soul_boot_context",
         "description": "Load the persistent machine identity without dumping all memories.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "idempotentHint": True},
+    },
+    {
+        "name": "soul_private_boot_context",
+        "description": (
+            "Load the owner-consented private identity projection. Hidden and denied "
+            "without exact processor consent."
+        ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "idempotentHint": True},
     },
@@ -1025,30 +1155,81 @@ TOOLS = [
         "annotations": {"readOnlyHint": True, "idempotentHint": True},
     },
     {
-        "name": "soul_memory_store",
-        "description": "Persist one explicit declarative fact in the local machine soul.",
+        "name": "soul_memory_propose",
+        "description": (
+            "Stage one untrusted declarative memory candidate for local-owner review. "
+            "This never mutates canonical SOUL memory."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "minLength": 1, "maxLength": 4096},
                 "importance": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                "source_event_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "session_id": {"type": "string", "maxLength": 200},
+                "turn_id": {"type": "string", "maxLength": 200},
+                "surface": {"type": "string", "maxLength": 80},
             },
-            "required": ["content"],
+            "required": ["content", "source_event_id"],
             "additionalProperties": False,
         },
-        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+    },
+    {
+        "name": "soul_profile_propose",
+        "description": (
+            "Stage an untrusted identity, OCEAN, rule or relationship change for "
+            "local-owner review. This never mutates the canonical profile."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "change_kind": {
+                    "type": "string",
+                    "enum": ["identity", "ocean", "rule", "relationship"],
+                },
+                "patch": {"type": "object"},
+                "source_event_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            },
+            "required": ["change_kind", "patch", "source_event_id"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
     },
 ]
+
+TOOL_SCOPES = {
+    "soul_boot_context": "boot.public",
+    "soul_private_boot_context": "boot.private",
+    "soul_memory_search": "memory.search.private",
+    "soul_memory_propose": "memory.propose",
+    "soul_profile_propose": "profile.propose",
+}
 
 
 ToolRunner = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class MCPStdioServer:
-    def __init__(self, runner: ToolRunner) -> None:
+    def __init__(
+        self,
+        runner: ToolRunner,
+        *,
+        scopes: set[str] | frozenset[str],
+        scope_resolver: Callable[[], frozenset[str]] | None = None,
+    ) -> None:
         self.runner = runner
+        self.scopes = frozenset(scopes)
+        self.scope_resolver = scope_resolver
         self.session_id: str | None = None
         self.expires_at = 0.0
+
+    def _current_scopes(self) -> frozenset[str]:
+        return self.scope_resolver() if self.scope_resolver is not None else self.scopes
+
+    def _visible_tools(self) -> list[dict[str, Any]]:
+        scopes = self._current_scopes()
+        return [tool for tool in TOOLS if TOOL_SCOPES[tool["name"]] in scopes]
 
     async def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
@@ -1064,8 +1245,8 @@ class MCPStdioServer:
             self.expires_at = time.monotonic() + ATTACH_TTL_SECONDS
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "soul-local", "version": "0.5.10"},
+                "capabilities": {"tools": {"listChanged": True}},
+                "serverInfo": {"name": "soul-local", "version": "0.6.0"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "
@@ -1078,14 +1259,25 @@ class MCPStdioServer:
         elif method == "tools/list":
             if self.session_id is None or time.monotonic() >= self.expires_at:
                 raise ValueError("SOUL attach session is not active")
-            result = {"tools": TOOLS}
+            result = {"tools": self._visible_tools()}
         elif method == "tools/call":
             if self.session_id is None or time.monotonic() >= self.expires_at:
                 raise ValueError("SOUL attach session is not active")
             params = request.get("params")
             if not isinstance(params, dict) or not isinstance(params.get("arguments", {}), dict):
                 raise ValueError("invalid tool call")
-            result = await self.runner(str(params.get("name") or ""), params.get("arguments", {}))
+            tool_name = str(params.get("name") or "")
+            required_scope = TOOL_SCOPES.get(tool_name)
+            if required_scope is None or required_scope not in self._current_scopes():
+                raise PermissionError("SOUL tool scope denied")
+            result = await self.runner(tool_name, params.get("arguments", {}))
+            # The private-context consent is bound to an exact snapshot.  A
+            # writer may change that snapshot while an async tool is running;
+            # never serialize bytes authorized against the stale snapshot.
+            # There is intentionally no await between this second check and
+            # returning the already-built result.
+            if required_scope not in self._current_scopes():
+                raise PermissionError("SOUL tool scope changed during call")
         else:
             return {
                 "jsonrpc": "2.0",
@@ -1097,8 +1289,34 @@ class MCPStdioServer:
 
 async def serve(config_path: Path, client_id: str) -> None:
     settings = ProxySettings.from_toml(config_path)
-    verify_client_grant(settings, client_id, config_path=config_path)
-    server = MCPStdioServer(lambda name, arguments: _run_tool(settings, name, arguments))
+    entry = verify_client_grant(settings, client_id, config_path=config_path)
+    scopes = entry.get("scopes")
+    if not isinstance(scopes, list) or not all(isinstance(item, str) for item in scopes):
+        raise ValueError("SOUL client grant scopes are invalid")
+    def resolve_scopes() -> frozenset[str]:
+        from soul_platform.context_consent import effective_scopes
+
+        raw = json.loads(ensure_client_grants(settings).read_text(encoding="utf-8"))
+        live_entry = raw.get("clients", {}).get(client_id)
+        if not isinstance(live_entry, dict) or live_entry.get("enabled") is not True:
+            return frozenset()
+        live_scopes = live_entry.get("scopes")
+        if not isinstance(live_scopes, list):
+            return frozenset()
+        return effective_scopes(settings, client_id, live_scopes)
+
+    runtime_session_id = secrets.token_urlsafe(24)
+    server = MCPStdioServer(
+        lambda name, arguments: _run_tool(
+            settings,
+            name,
+            arguments,
+            client_id=client_id,
+            session_id=runtime_session_id,
+        ),
+        scopes=frozenset(),
+        scope_resolver=resolve_scopes,
+    )
     while True:
         line = await asyncio.to_thread(sys.stdin.buffer.readline)
         if not line:
