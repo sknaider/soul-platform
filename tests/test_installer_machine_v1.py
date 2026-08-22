@@ -14,8 +14,12 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.6.1"' in text
-    assert 'CORE_VERSION="0.4.3"' in text
+    assert 'PLATFORM_VERSION="0.7.0.dev1"' in text
+    assert 'CORE_VERSION="0.5.0.dev1"' in text
+    assert "--dni-credential" in text
+    assert "--dni-trust-store" in text
+    assert "--dni-trust-store-sha256" in text
+    assert "enroll-dni" in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
     assert 'PLATFORM_INSTALL_FLAGS=(--force-reinstall)' in text
@@ -48,6 +52,10 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "systemctl --user show-environment" in text
     assert "sin autostart falso" in text
     assert 'MACHINE_AUTOSTART_ARGS=(--no-autostart)' in text
+    assert '--sia-endpoint' in text and '--sia-enrollment-token-file' in text
+    assert '--enrollment-token "$SIA_' not in text
+    assert 'acquire-dni-online --root "$SOUL_ROOT"' in text
+    assert "elegí DNI preemitido o SIA online, nunca ambos" in text
     assert '"${MACHINE_AUTOSTART_ARGS[@]}"' in text
     assert "modo bajo demanda, sin unidad huérfana" in text
     assert "alma persistente inicializada en modo bajo demanda" in text
@@ -63,6 +71,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
 
 def test_windows_installer_is_user_space_and_initializes_machine_soul():
     text = (ROOT / "installer" / "Install-Soul.ps1").read_text()
+    guide = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
     recovery = (ROOT / "installer" / "Soul-Installer-Recovery.psm1").read_text()
     assert 'Import-Module -Name $recoveryModule -Force' in text
     assert "Invoke-SoulPostActivateRuntime" in text
@@ -90,13 +99,28 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "soul-tray.exe" in text
     assert 'Invoke-Checked $tray @("--headless-check")' in text
     assert 'Invoke-Checked $tray @("--install-autostart")' in text
+    assert "[string]$SiaEndpoint" in text
+    assert "[string]$SiaEnrollmentTokenFile" in text
+    assert '"acquire-dni-online", "--root", $soulRoot' in text
+    assert '"--enrollment-token-file", $tokenStaging' in text
+    assert '"--enrollment-token", $SiaEnrollmentToken' not in text
+    assert "http://100.75.201.110:8781" in guide
+    assert "https://sia.soulsmemory.com" not in guide
+    assert 'Join-Path $soulRoot "soul-dni-device.pem"' in text
+    assert 'Join-Path $soulRoot "soul-dni-authority.json"' in text
+    assert 'Join-Path $soulRoot "dni-delivery\\soul-dni.json"' in text
+    assert "Elegi DNI preemitido o SIA online, nunca ambos" in text
     assert '"pystray==0.19.5", "pillow==12.3.0"' in text
     assert "Scripts\\soul-tray.exe" in text
     assert "Scripts\\soul-tray-cli.exe" in text
     assert 'Invoke-Checked $trayCli @("--headless-check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.6.1"' in text
-    assert "soul-framework 0.4.3 exacto" in text
+    assert '$PlatformVersion = "0.7.0.dev1"' in text
+    assert '$CoreVersion = "0.5.0.dev1"' in text
+    assert "soul-framework $CoreVersion exacto" in text
+    assert "DNI incompleto" in text
+    assert '"enroll-dni", "--config", $soulConfig' in text
+    assert "-DniArguments $DniArguments" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
     assert 'soul-machine-embedding-cutover.exe' in text
@@ -260,7 +284,7 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.6.1" in text
+    assert "SOUL PLATFORM 0.7.0.dev1" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text

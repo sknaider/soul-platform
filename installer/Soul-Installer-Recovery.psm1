@@ -16,11 +16,12 @@ function Invoke-SoulPostActivateRuntime {
         [Parameter(Mandatory = $true)][string]$BaseUrl,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][bool]$CutoverActivated,
+        [string[]]$DniArguments = @(),
         [Parameter(Mandatory = $true)][scriptblock]$Runner
     )
 
     try {
-        & $Runner $Machine @("init", "--kind", $Kind, "--base-url", $BaseUrl, "--model", $Model)
+        & $Runner $Machine (@("init", "--kind", $Kind, "--base-url", $BaseUrl, "--model", $Model) + @($DniArguments))
     } catch {
         if ($CutoverActivated) {
             try {

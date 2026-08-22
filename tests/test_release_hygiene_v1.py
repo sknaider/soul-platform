@@ -15,7 +15,7 @@ def test_version_contract_and_packaged_source_layout():
     assert project["version"] == soul_platform.__version__
     assert Path(soul_platform.__file__).resolve().is_relative_to((ROOT / "src").resolve())
     assert (ROOT / "src/soul_platform/agency.py").is_file()
-    assert "soul-framework==0.4.3" in project["dependencies"]
+    assert "soul-framework==0.5.0.dev1" in project["dependencies"]
     assert "numpy>=1.26" in project["dependencies"]
     assert "usearch>=2.16.0" in project["dependencies"]
     assert all("soul-framework[ann]" not in item for item in project["dependencies"])

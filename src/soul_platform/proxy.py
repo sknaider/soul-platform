@@ -14,6 +14,7 @@ import base64
 import sqlite3
 import stat
 import argparse
+import asyncio
 import sys
 import time
 import uuid
@@ -29,6 +30,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from soul_framework import Soul
 from soul_framework.config import SoulConfig
+from soul_framework.identity.dni import VerifiedSoulDNI, verify_soul_dni
 
 from soul_platform.auth import (
     AuthenticationDenied,
@@ -146,6 +148,10 @@ class ProxySettings:
     t5_owner_subject: str = ""
     t5_principal_keys_file: Path | None = None
     t5_state_db: Path | None = None
+    soul_dni: str = ""
+    dni_credential_file: Path | None = None
+    dni_trust_store_file: Path | None = None
+    dni_trust_store_sha256: str = ""
 
     @classmethod
     def from_toml(cls, path: str | os.PathLike[str]) -> "ProxySettings":
@@ -213,6 +219,18 @@ class ProxySettings:
                 if memory_egress.get("state_db")
                 else None
             ),
+            soul_dni=str(soul.get("dni") or ""),
+            dni_credential_file=(
+                _absolute_path(soul.get("dni_credential_file"), "soul.dni_credential_file")
+                if soul.get("dni_credential_file")
+                else None
+            ),
+            dni_trust_store_file=(
+                _absolute_path(soul.get("dni_trust_store_file"), "soul.dni_trust_store_file")
+                if soul.get("dni_trust_store_file")
+                else None
+            ),
+            dni_trust_store_sha256=str(soul.get("dni_trust_store_sha256") or ""),
         )
         if settings.soul_db.parent.resolve() != config.parent.resolve():
             raise ValueError("soul.db must stay inside the canonical SOUL root")
@@ -227,6 +245,12 @@ class ProxySettings:
             raise ValueError(
                 "memory_egress.principal_keys_file must stay inside the canonical SOUL root"
             )
+        for field, candidate in (
+            ("soul.dni_credential_file", settings.dni_credential_file),
+            ("soul.dni_trust_store_file", settings.dni_trust_store_file),
+        ):
+            if candidate is None or candidate.parent.resolve() != config.parent.resolve():
+                raise ValueError(f"{field} must stay inside the canonical SOUL root")
         settings.validate()
         return settings
 
@@ -237,6 +261,9 @@ class ProxySettings:
             uuid.UUID(self.machine_soul_id)
         except (ValueError, AttributeError):
             raise ValueError("soul.machine_soul_id must be a UUID") from None
+        verified = self.verified_dni("soul-platform")
+        if verified.soul_dni != self.soul_dni:
+            raise ValueError("soul.dni does not match the SOUL-issued credential")
         if self.host not in LOOPBACK_HOSTS:
             raise ValueError("proxy host must be loopback")
         if not 1024 <= self.port <= 65535:
@@ -321,6 +348,22 @@ class ProxySettings:
             raise ValueError("single-owner compatibility must not accept principal keys")
         _assert_no_symlink_components(self.t5_state_path, "memory_egress.state_db")
         self.read_token()
+
+    def verified_dni(self, audience: str) -> VerifiedSoulDNI:
+        if self.dni_credential_file is None or self.dni_trust_store_file is None:
+            raise ValueError("SOUL-issued DNI credential and trust store are required")
+        verified = verify_soul_dni(
+            self.dni_credential_file,
+            self.dni_trust_store_file,
+            expected_audience=audience,
+            expected_machine_soul_id=self.machine_soul_id,
+            expected_trust_store_sha256=self.dni_trust_store_sha256,
+        )
+        if verified.soul_dni != self.soul_dni:
+            raise PermissionError(
+                "SOUL DNI renewal changed the sovereign soul identity"
+            )
+        return verified
 
     def read_token(self) -> str:
         _assert_no_symlink_components(self.token_file, "proxy token_file")
@@ -523,6 +566,7 @@ def create_app(
     *,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     upstream_attestor: Any | None = None,
+    config_path: Path | None = None,
 ) -> FastAPI:
     settings.validate()
     runtime_attestor = upstream_attestor or verify_runtime_attestation
@@ -562,6 +606,33 @@ def create_app(
             transport=upstream_transport,
             trust_env=False,
         )
+        renewal_task = None
+        if config_path is not None and (config_path.parent / "soul-dni-authority.json").exists():
+            async def renewal_watch() -> None:
+                from soul_platform.dni_online import renew_dni_online_if_due
+
+                while True:
+                    await asyncio.sleep(6 * 60 * 60)
+                    try:
+                        renewed = await asyncio.to_thread(
+                            renew_dni_online_if_due,
+                            config=config_path,
+                            restart=False,
+                        )
+                    except Exception:
+                        # The live per-request DNI gate remains authoritative.
+                        # A transient outage before expiry is retried; after
+                        # expiry every operational request is already denied.
+                        continue
+                    if renewed:
+                        shutdown = getattr(_app.state, "request_shutdown", None)
+                        if shutdown is not None:
+                            shutdown()
+                        return
+
+            renewal_task = asyncio.create_task(
+                renewal_watch(), name="soul-dni-renewal-watch"
+            )
         try:
             soul_config = SoulConfig(
                 backend="sqlite",
@@ -572,6 +643,10 @@ def create_app(
                 ollama_embedding_model=settings.embedding_model,
                 ollama_embedding_url=settings.embedding_url,
                 ollama_embedding_timeout=settings.embedding_timeout_seconds,
+                dni_credential_path=str(settings.dni_credential_file),
+                dni_trust_store_path=str(settings.dni_trust_store_file),
+                dni_trust_store_sha256=settings.dni_trust_store_sha256,
+                machine_soul_id=settings.machine_soul_id,
             )
             embedding = None
             if settings.embedding_provider == "bge-m3":
@@ -606,6 +681,12 @@ def create_app(
                     )
                 yield
         finally:
+            if renewal_task is not None:
+                renewal_task.cancel()
+                try:
+                    await renewal_task
+                except asyncio.CancelledError:
+                    pass
             state["soul"] = None
             state["upstream"] = None
             state["ledger"] = None
@@ -613,6 +694,36 @@ def create_app(
             await client.aclose()
 
     app = FastAPI(title="SOUL Proxy", version="1", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def require_live_soul_dni(request: Request, call_next):
+        # Shutdown remains available so an expired instance can be stopped
+        # cleanly. Every operational surface revalidates the renewable SOUL
+        # credential and signed revocation snapshot before doing any work.
+        if request.url.path != "/admin/shutdown":
+            try:
+                settings.verified_dni("soul-platform")
+            except Exception:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "SOUL DNI renewal required",
+                        "soul_connected": False,
+                    },
+                )
+        response = await call_next(request)
+        if request.url.path != "/admin/shutdown":
+            try:
+                settings.verified_dni("soul-platform")
+            except Exception:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "SOUL DNI renewal required",
+                        "soul_connected": False,
+                    },
+                )
+        return response
 
     def require_token(authorization: str | None, x_soul_token: str | None) -> None:
         expected = settings.read_token()
@@ -992,14 +1103,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m soul_platform.proxy")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    settings = ProxySettings.from_toml(args.config)
-    run_proxy(settings)
+    config = Path(args.config).expanduser().resolve()
+    from soul_platform.dni_online import attempt_startup_renewal
+
+    attempt_startup_renewal(config)
+    settings = ProxySettings.from_toml(config)
+    run_proxy(settings, config_path=config)
 
 
-def run_proxy(settings: ProxySettings) -> None:
+def run_proxy(settings: ProxySettings, *, config_path: Path | None = None) -> None:
     import uvicorn
 
-    app = create_app(settings)
+    app = create_app(settings, config_path=config_path)
     config_options: dict[str, Any] = {
         "host": settings.host,
         "port": settings.port,

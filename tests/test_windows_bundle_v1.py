@@ -24,6 +24,7 @@ def _fake_root(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     installer.mkdir(parents=True)
     (root / "pyproject.toml").write_text(
         '[project]\nname="soul-platform"\nversion="9.8.7"\n'
+        'dependencies=["soul-framework==8.7.6"]\n'
     )
     (installer / "Install-Soul.ps1").write_text("installer")
     (installer / "Soul-Installer-Recovery.psm1").write_text("recovery")
@@ -50,7 +51,7 @@ def _fake_root(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     )
     wheel = tmp_path / "soul_platform-9.8.7-py3-none-any.whl"
     wheel.write_bytes(b"wheel-bytes")
-    core_wheel = tmp_path / "soul_framework-0.4.3-py3-none-any.whl"
+    core_wheel = tmp_path / "soul_framework-8.7.6-py3-none-any.whl"
     core_wheel.write_bytes(b"core-wheel-bytes")
     return root, wheel, core_wheel, wheelhouse
 
@@ -104,7 +105,7 @@ def test_bundle_rejects_wrong_core_wheel(tmp_path):
     root, wheel, _core_wheel, wheelhouse = _fake_root(tmp_path)
     wrong = tmp_path / "soul_framework-0.4.0-py3-none-any.whl"
     wrong.write_bytes(b"wrong")
-    with pytest.raises(ValueError, match="Core wheel 0.4.3"):
+    with pytest.raises(ValueError, match="Core wheel 8.7.6"):
         MODULE.build_bundle(root, wheel, wrong, wheelhouse, tmp_path / "bad-core.zip")
 
 

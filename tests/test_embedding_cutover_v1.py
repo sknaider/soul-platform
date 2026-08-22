@@ -154,6 +154,10 @@ def test_activate_and_rollback_preserve_both_database_generations(tmp_path, monk
             embedding_provider="simple",
             embedding_dimensions=128,
             memory_vector_index="exact",
+            dni_credential_path=str(legacy.dni_credential_file),
+            dni_trust_store_path=str(legacy.dni_trust_store_file),
+            dni_trust_store_sha256=legacy.dni_trust_store_sha256,
+            machine_soul_id=legacy.machine_soul_id,
         )
         async with Soul.create(legacy.soul_name, config=config) as soul:
             assert isinstance(await soul.boot(), str)

@@ -47,7 +47,7 @@ def _write_bundle(tmp_path: Path, platform_version: str) -> Path:
     installer = (ROOT / "installer" / "Install-Soul.ps1").read_bytes()
     wheels = {
         f"soul_platform-{platform_version}-py3-none-any.whl": b"platform-wheel",
-        "soul_framework-0.4.3-py3-none-any.whl": b"core-wheel",
+        "soul_framework-0.5.0.dev1-py3-none-any.whl": b"core-wheel",
     }
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("Install-Soul.ps1", installer)
@@ -60,9 +60,9 @@ def _write_bundle(tmp_path: Path, platform_version: str) -> Path:
 
 
 def test_adaptive_bundle_accepts_exact_release_and_rejects_previous_version(tmp_path):
-    current = _write_bundle(tmp_path, "0.6.1")
+    current = _write_bundle(tmp_path, "0.7.0.dev1")
     assert MODULE.verify(current)["status"] == "verified"
 
-    previous = _write_bundle(tmp_path, "0.6.0")
-    with pytest.raises(ValueError, match="exact Platform 0.6.1"):
+    previous = _write_bundle(tmp_path, "0.7.0.dev0")
+    with pytest.raises(ValueError, match="exact Platform 0.7.0.dev1"):
         MODULE.verify(previous)

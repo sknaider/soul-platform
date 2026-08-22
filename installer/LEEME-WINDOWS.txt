@@ -1,5 +1,29 @@
-SOUL PLATFORM 0.6.1 — INSTALACION EN WINDOWS
+SOUL PLATFORM 0.7.0.dev1 — INSTALACION EN WINDOWS
 ==============================================
+
+Identidad obligatoria (DNI):
+- Este paquete NO contiene la autoridad SIA ni ninguna llave privada.
+- Antes de instalar, obten del canal autenticado de SOUL estos tres archivos
+  publicos preemitidos para esta maquina y dejalos junto al .bat:
+  soul-dni.json, soul-dni-trust.json y soul-dni-trust.sha256.
+- Con los tres sidecars presentes, el doble clic los entrega al instalador.
+- Ejecuta desde PowerShell:
+    .\Install-Soul.ps1 -RequireBundledWheel `
+      -DniCredential C:\ruta\soul-dni.json `
+      -DniTrustStore C:\ruta\soul-dni-trust.json `
+      -DniTrustStoreSha256 <64-hex>
+- Alternativa online (token de un solo uso emitido por SOUL):
+    .\Install-Soul.ps1 -RequireBundledWheel `
+      -SiaEndpoint http://100.75.201.110:8781 `
+      -SiaEnrollmentTokenFile C:\ruta\privada\token-sia.txt
+
+La PC debe estar conectada al tailnet privado de SOUL. El instalador rechaza
+HTTP hacia cualquier otra IP o nombre DNS.
+- El token online no se guarda. La PC genera una llave Ed25519 privada local y
+  renueva su DNI antes del limite obligatorio de 30 dias.
+- El instalador falla cerrado si falta uno, la firma no valida o el DNI no
+  corresponde a esta maquina. En una instalacion legacy, enrola primero el
+  DNI y conserva MachineSoul.db antes de cualquier migracion.
 
 Requisitos:
 - Windows 10 22H2 o Windows 11.

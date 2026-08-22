@@ -77,6 +77,87 @@ async def test_mcp_tools_require_fresh_initialize_session():
     assert [tool["name"] for tool in listing["result"]["tools"]] == ["soul_boot_context"]
 
 
+async def test_mcp_disconnects_immediately_when_soul_dni_renewal_fails():
+    calls = []
+
+    async def runner(name, arguments):
+        calls.append((name, arguments))
+        return {}
+
+    server = MCPStdioServer(
+        runner,
+        scopes={"boot.public"},
+        dni_verifier=lambda: (_ for _ in ()).throw(ValueError("expired")),
+    )
+    with pytest.raises(PermissionError, match="DNI renewal required"):
+        await server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+    assert calls == []
+
+
+async def test_mcp_rejects_signed_identity_substitution(tmp_path, monkeypatch):
+    result = initialize(
+        root=tmp_path / "soul",
+        upstream_kind="ollama",
+        upstream_base_url="http://127.0.0.1:11434/v1",
+        upstream_model="brain",
+        enable_autostart=False,
+    )
+    settings = ProxySettings.from_toml(result.config)
+    valid = settings.verified_dni("soul-platform")
+    from soul_framework.identity.dni import VerifiedSoulDNI, generate_soul_id
+
+    attacker_soul_id = generate_soul_id()
+    attacker = VerifiedSoulDNI(
+        **{
+            **valid.__dict__,
+            "soul_id": attacker_soul_id,
+            "soul_dni": f"urn:soul:agent:{attacker_soul_id}",
+            "sequence": valid.sequence + 1,
+        }
+    )
+    monkeypatch.setattr("soul_platform.proxy.verify_soul_dni", lambda *a, **k: attacker)
+    server = MCPStdioServer(
+        lambda _name, _arguments: {},
+        scopes={"boot.public"},
+        dni_verifier=lambda: settings.verified_dni("soul-platform"),
+    )
+    with pytest.raises(PermissionError, match="DNI renewal required"):
+        await server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+
+
+async def test_mcp_discards_tool_result_if_dni_is_revoked_mid_call():
+    live = True
+
+    def verify_live():
+        if not live:
+            raise ValueError("revoked")
+
+    async def runner(_name, _arguments):
+        nonlocal live
+        live = False
+        return {"content": [{"type": "text", "text": "PRIVATE_BYTES"}]}
+
+    server = MCPStdioServer(
+        runner, scopes={"boot.public"}, dni_verifier=verify_live
+    )
+    await server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    with pytest.raises(PermissionError, match="DNI renewal required"):
+        await server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "soul_boot_context", "arguments": {}},
+            }
+        )
+
+
 async def test_mcp_revalidates_private_scope_after_async_tool_interleaving():
     live_scopes = {"memory.search.private"}
 

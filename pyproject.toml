@@ -1,11 +1,11 @@
 [project]
 name = "soul-platform"
-version = "0.6.1"
+version = "0.7.0.dev1"
 description = "SOUL Platform — contained agent runtime, coordination and autonomy for SOUL Core"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "soul-framework==0.4.3",
+    "soul-framework==0.5.0.dev1",
     "numpy>=1.26",
     "usearch>=2.16.0",
     "cryptography>=42",
@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["soul-framework[postgres]==0.4.3"]
-embeddings = ["soul-framework[embeddings]==0.4.3"]
+postgres = ["soul-framework[postgres]==0.5.0.dev1"]
+embeddings = ["soul-framework[embeddings]==0.5.0.dev1"]
 desktop = ["pystray==0.19.5", "pillow==12.3.0"]
 all = ["soul-platform[postgres,embeddings,desktop]"]
 dev = [
