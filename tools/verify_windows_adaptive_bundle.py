@@ -17,7 +17,7 @@ REQUIRED = {
     "python_skip": 'Skip "Python 3.13 x64 ya existe"',
     "ollama_skip": 'Skip "Ollama ya existe"',
     "bundle_byte_skip": "function Test-ExactBundledInstall(",
-    "record_hash_check": 'distribution.read_text("RECORD")',
+    "record_hash_check": "distribution.read_text('RECORD')",
     "dependency_repair": "Reparando solo dependencias ausentes o incompatibles",
     "embedding_model": 'pull", "bge-m3"',
     "bootstrap_brain": '"gemma3:1b"',
@@ -29,6 +29,15 @@ REQUIRED = {
     "bge_digest": "function Assert-BgeM3Digest",
     "wheelhouse_lock": 'Join-Path $PSScriptRoot "WHEELHOUSE.sha256"',
     "offline_pip": 'Good "Dependencias Python instaladas desde wheelhouse, sin PyPI"',
+    "inventory": "function Get-SoulComponentInventory",
+    "selective_plan": "function Get-SoulInstallPlan",
+    "venv_python_reuse": '@{ Exe = (Join-Path $Venv "Scripts\\python.exe"); Args = @() }',
+    "ps51_python_probe": "struct.calcsize(chr(80))*8",
+    "atomic_rerun": "function Move-SoulAtomicFile",
+    "claude_new_missing_shape": "function Test-SoulMcpMissingText",
+    "additive_client_binding": "function Enroll-SoulParentBinding",
+    "tray_real_check": 'Invoke-Checked $trayCli @("--headless-check")',
+    "ps51_exact_bundle_probe": "direct.get('url')",
 }
 
 BANNED = {
@@ -55,10 +64,10 @@ def verify(bundle: Path) -> dict[str, object]:
     payload = bundle.read_bytes()
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = archive.namelist()
-        platform = [name for name in names if re.fullmatch(r"soul_platform-0\.5\.6-py3-none-any\.whl", name)]
+        platform = [name for name in names if re.fullmatch(r"soul_platform-0\.5\.7-py3-none-any\.whl", name)]
         core = [name for name in names if re.fullmatch(r"soul_framework-0\.4\.3-py3-none-any\.whl", name)]
         if len(platform) != 1 or len(core) != 1:
-            raise ValueError("bundle must contain exact Platform 0.5.6 and Core 0.4.3 wheels")
+            raise ValueError("bundle must contain exact Platform 0.5.7 and Core 0.4.3 wheels")
         for name in (*platform, *core):
             expected = archive.read(name + ".sha256").decode("ascii").split()[0].lower()
             if sha256(archive.read(name)) != expected:

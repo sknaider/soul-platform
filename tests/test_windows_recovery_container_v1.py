@@ -46,7 +46,39 @@ def test_windows_post_activate_recovery_by_effect():
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "WINDOWS_RECOVERY_FAULT_INJECTION_OK events=3" in result.stdout
+    assert "WINDOWS_RECOVERY_FAULT_INJECTION_OK rollback_events=3 fresh_events=1" in result.stdout
+
+
+def test_windows_adaptive_installer_primitives_by_effect():
+    """Parse production bytes and exercise the second-run atomic write."""
+    if os.environ.get("SEAL_REQUIRE_POWERSHELL_FAULT_INJECTION") != "1":
+        pytest.skip("release-only PowerShell container gate")
+    docker = shutil.which("docker")
+    assert docker, "Docker is required for the release-only PowerShell gate"
+    result = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "-v",
+            f"{ROOT}:/work:ro",
+            POWERSHELL_IMAGE,
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            "/work/tests/windows_installer_adaptive_primitives.ps1",
+            "-InstallerPath",
+            "/work/installer/Install-Soul.ps1",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WINDOWS_ADAPTIVE_PRIMITIVES_OK reruns=2 backups=1 profiles=4" in result.stdout
 
 
 @pytest.mark.parametrize("previous_xml", ["", "<Task><RegistrationInfo /></Task>"])
