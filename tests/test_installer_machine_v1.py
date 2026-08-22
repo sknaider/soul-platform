@@ -14,7 +14,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.5.6"' in text
+    assert 'PLATFORM_VERSION="0.5.7"' in text
     assert 'CORE_VERSION="0.4.3"' in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
@@ -73,16 +73,16 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "if ($RequireBundledWheel)" in text
     assert "$env:SOUL_PACKAGE_SOURCE" in text
     assert "m.distribution(name).read_text('direct_url.json')" in text
-    assert ".resolve().as_uri()" in text and "archive_info" in text
+    assert "urlsplit(url).scheme=='file'" in text and "archive_info" in text
     assert "soul-tray.exe" in text
     assert 'Invoke-Checked $tray @("--headless-check")' in text
     assert 'Invoke-Checked $tray @("--install-autostart")' in text
     assert '"pystray==0.19.5", "pillow==12.3.0"' in text
     assert "Scripts\\soul-tray.exe" in text
     assert "Scripts\\soul-tray-cli.exe" in text
-    assert 'Invoke-Checked $trayCli @("--check")' in text
+    assert 'Invoke-Checked $trayCli @("--headless-check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.5.6"' in text
+    assert '[version]"0.5.7"' in text
     assert "soul-framework 0.4.3 exacto" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
@@ -112,6 +112,44 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     machine = text.index('$machine = Join-Path $Venv "Scripts\\soul-machine.exe"')
     assert guard < ollama < machine
     assert 'Good "BGE-M3 local verificado (1024 dimensiones + digest aprobado)"' in text
+
+
+def test_windows_installer_inventory_is_selective_and_ps51_safe():
+    text = (ROOT / "installer" / "Install-Soul.ps1").read_text()
+    assert "function Get-SoulComponentInventory" in text
+    assert "function Get-SoulInstallPlan" in text
+    assert "Inventario previo: reutilizo lo presente y descargo solo lo ausente" in text
+    assert '@{ Exe = (Join-Path $Venv "Scripts\\python.exe"); Args = @() }' in text
+    assert "struct.calcsize(chr(80))*8" in text
+    assert 'struct.calcsize(`"P`")' not in text
+    assert text.index("$initialInventory = Get-SoulComponentInventory") < text.index(
+        "$launcher = Ensure-Python"
+    )
+    assert "$initialPlan = Get-SoulInstallPlan $initialInventory" in text
+
+
+def test_windows_installer_second_run_is_atomic_and_client_compatible():
+    text = (ROOT / "installer" / "Install-Soul.ps1").read_text()
+    assert "function Move-SoulAtomicFile" in text
+    assert "[IO.File]::Replace($Temporary, $Destination, $backup)" in text
+    assert "[IO.File]::Replace($temporary, $path, $null)" not in text
+    assert "[IO.File]::Replace($temporary, $hooksPath, $null)" not in text
+    assert "function Test-SoulMcpMissingText" in text
+    assert "No MCP server (?:found|named)" in text
+    assert "function Enroll-SoulParentBinding" in text
+    assert text.count("Enroll-SoulParentBinding $Mcp $Config") == 3
+    assert 'Invoke-Checked $trayCli @("--check")' not in text
+    assert 'Invoke-Checked $trayCli @("--headless-check")' in text
+
+
+def test_windows_installer_reuses_exact_bytes_from_a_different_extraction_path():
+    text = (ROOT / "installer" / "Install-Soul.ps1").read_text()
+    probe = text[text.index("function Test-ExactBundledInstall") : text.index("$initialInventory")]
+    assert "expected_hash.lower()" in probe
+    assert "urlsplit(url).scheme" in probe
+    assert "pathlib.Path(wheel).resolve().as_uri()" not in probe
+    assert 'direct.get("url")' not in probe
+    assert "direct.get('url')" in probe
 
 
 def test_windows_fresh_or_bge_install_defines_recovery_paths_before_any_branch():
@@ -194,7 +232,7 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.5.6" in text
+    assert "SOUL PLATFORM 0.5.7" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text

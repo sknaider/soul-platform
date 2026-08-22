@@ -69,6 +69,26 @@ $script:InstalledComponents = New-Object System.Collections.Generic.List[string]
 $script:SkippedComponents = New-Object System.Collections.Generic.List[string]
 function Mark-Installed([string]$Component) { $script:InstalledComponents.Add($Component) | Out-Null }
 function Mark-Skipped([string]$Component) { $script:SkippedComponents.Add($Component) | Out-Null }
+function Move-SoulAtomicFile([string]$Temporary, [string]$Destination, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Temporary -PathType Leaf)) {
+        throw "Falta el archivo temporal para $Label"
+    }
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        # Windows PowerShell 5.1/.NET Framework rejects File.Replace(..., $null)
+        # on some systems. A real, unique backup path makes the replacement
+        # atomic and preserves the previous bytes instead of deleting them.
+        $backupRoot = Join-Path $env:LOCALAPPDATA "SOUL\atomic-backups"
+        [IO.Directory]::CreateDirectory($backupRoot) | Out-Null
+        $safeLabel = ($Label -replace '[^A-Za-z0-9_.-]', '-')
+        $backup = Join-Path $backupRoot ("{0}-{1}-{2}.bak" -f $safeLabel, [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'), $PID)
+        [IO.File]::Replace($Temporary, $Destination, $backup)
+    } else {
+        [IO.File]::Move($Temporary, $Destination)
+    }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        throw "El reemplazo atomico no produjo $Label"
+    }
+}
 function Write-InstallReceipt([string]$Root, [string]$Status) {
     [IO.Directory]::CreateDirectory($Root) | Out-Null
     $path = Join-Path $Root "install-receipt.json"
@@ -76,7 +96,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.5.6"
+        platform_version = "0.5.7"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -86,11 +106,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     } | ConvertTo-Json -Depth 8
     $utf8NoBom = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($temporary, $payload, $utf8NoBom)
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-        [IO.File]::Replace($temporary, $path, $null)
-    } else {
-        [IO.File]::Move($temporary, $path)
-    }
+    Move-SoulAtomicFile $temporary $path "install-receipt"
     return $path
 }
 function Invoke-NativeCapture([string]$File, [string[]]$Arguments) {
@@ -250,12 +266,24 @@ function Assert-CodexSoulMcp([string]$Codex, [string]$Mcp, [string]$Config) {
     )
 }
 
+function Test-SoulMcpMissingText([string]$Text) {
+    return [bool]($Text -match 'No MCP server (?:found|named)')
+}
+
+function Enroll-SoulParentBinding([string]$Mcp, [string]$Config, [string]$ClientId, [string]$Parent) {
+    Invoke-Checked $Mcp @(
+        "--config", $Config, "--client-id", $ClientId, "--enroll-parent", $Parent,
+        "--rotate-existing", "--add-parent-binding"
+    )
+}
+
 function Assert-ClaudeSoulMcp([string]$Claude, [string]$Mcp, [string]$Config) {
     $probe = Invoke-NativeCapture $Claude @("mcp", "get", "soul-local")
     if ($probe.ExitCode -ne 0) { return $false }
     $text = $probe.Output -join "`n"
     return (
-        $text -notmatch 'Failed to connect|No MCP server found' -and
+        $text -notmatch 'Failed to connect' -and
+        -not (Test-SoulMcpMissingText $text) -and
         $text -match [regex]::Escape("Command: $Mcp") -and
         $text -match [regex]::Escape("Args: --config $Config --client-id claude")
     )
@@ -304,11 +332,7 @@ function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$
         $json = $document | ConvertTo-Json -Depth 20
         $utf8NoBom = New-Object Text.UTF8Encoding($false)
         [IO.File]::WriteAllText($temporary, $json, $utf8NoBom)
-        if (Test-Path -LiteralPath $hooksPath -PathType Leaf) {
-            [IO.File]::Replace($temporary, $hooksPath, $null)
-        } else {
-            [IO.File]::Move($temporary, $hooksPath)
-        }
+        Move-SoulAtomicFile $temporary $hooksPath "codex-hooks"
         $live = Get-Content -LiteralPath $hooksPath -Raw | ConvertFrom-Json
         $ownedLive = @($live.hooks.SessionStart | ForEach-Object { $_.hooks } | Where-Object {
             ([string]$_.commandWindows) -eq $command -and
@@ -335,7 +359,7 @@ function Test-ClaudeSoulMcpShape([string]$Claude, [string]$Mcp, [string]$Config)
     $probe = Invoke-NativeCapture $Claude @("mcp", "get", "soul-local")
     $text = $probe.Output -join "`n"
     return (
-        $text -notmatch 'No MCP server found' -and
+        -not (Test-SoulMcpMissingText $text) -and
         $text -match [regex]::Escape("Command: $Mcp") -and
         $text -match [regex]::Escape("Args: --config $Config --client-id claude")
     )
@@ -370,7 +394,7 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
         $claudeCli = Resolve-NativeCli $claude
         if (-not (Test-ClaudeSoulMcpShape $claudeCli $Mcp $Config)) {
             $existing = Invoke-NativeCapture $claudeCli @("mcp", "get", "soul-local")
-            if (($existing.Output -join "`n") -notmatch 'No MCP server found') {
+            if (-not (Test-SoulMcpMissingText ($existing.Output -join "`n"))) {
                 throw "HOLD: Claude ya tiene soul-local distinto o no saludable; no lo sobrescribo"
             }
             $needClaude = $true
@@ -404,12 +428,9 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
         }
         if ($codexCli) {
             $codexParent = Resolve-ClientParentBinary "codex" $codexCli
-            Invoke-Checked $Mcp @("--config", $Config, "--client-id", "codex", "--enroll-parent", $codexParent, "--rotate-existing")
+            Enroll-SoulParentBinding $Mcp $Config "codex" $codexParent
             foreach ($appParent in $codexAppParents) {
-                Invoke-Checked $Mcp @(
-                    "--config", $Config, "--client-id", "codex", "--enroll-parent", $appParent,
-                    "--rotate-existing", "--add-parent-binding"
-                )
+                Enroll-SoulParentBinding $Mcp $Config "codex" $appParent
             }
             if (-not (Assert-CodexSoulMcp $codexCli $Mcp $Config)) {
                 throw "Codex no confirmo el MCP local de SOUL"
@@ -417,7 +438,7 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
         }
         if ($claude) {
             $claudeParent = Resolve-ClientParentBinary "claude" $claudeCli
-            Invoke-Checked $Mcp @("--config", $Config, "--client-id", "claude", "--enroll-parent", $claudeParent, "--rotate-existing")
+            Enroll-SoulParentBinding $Mcp $Config "claude" $claudeParent
             if (-not (Assert-ClaudeSoulMcp $claudeCli $Mcp $Config)) {
                 throw "Claude no confirmo el MCP local de SOUL"
             }
@@ -550,6 +571,7 @@ function Install-WingetUserPackage([string]$PackageId, [string]$Label) {
 
 function Find-Python {
     $candidates = @(
+        @{ Exe = (Join-Path $Venv "Scripts\python.exe"); Args = @() },
         @{ Exe = "py"; Args = @("-3.13") },
         @{ Exe = "py"; Args = @("-3.12") },
         @{ Exe = "py"; Args = @("-3.11") },
@@ -560,7 +582,9 @@ function Find-Python {
     )
     foreach ($candidate in $candidates) {
         try {
-            $version = & $candidate.Exe @($candidate.Args) -c "import struct,sys; print(f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(`"P`")*8}')" 2>$null
+            # chr(80) avoids nested quote escaping that breaks this probe in
+            # Windows PowerShell 5.1 even though it works in PowerShell 7.
+            $version = & $candidate.Exe @($candidate.Args) -c "import struct,sys; print(f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}')" 2>$null
             $fields = $version.Trim().Split(':')
             $parts = $fields[0].Split('.')
             if ($RequireBundledWheel -and -not (
@@ -631,6 +655,40 @@ function Ensure-Ollama {
     return $ollama
 }
 
+function Get-SoulComponentInventory {
+    $python = Find-Python
+    $ollama = Find-Ollama
+    $codex = Get-Command "codex" -ErrorAction SilentlyContinue
+    $claude = Get-Command "claude" -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+        Python = [bool]$python
+        PythonSource = $(if ($python) { "{0} {1}" -f $python.Exe, (@($python.Args) -join " ") } else { "missing" })
+        SoulVenv = (Test-Path -LiteralPath (Join-Path $Venv "Scripts\python.exe") -PathType Leaf)
+        Ollama = [bool]$ollama
+        Codex = [bool]$codex
+        Claude = [bool]$claude
+    }
+}
+
+function Get-SoulInstallPlan([pscustomobject]$Inventory) {
+    return [pscustomobject][ordered]@{
+        Python = $(if ($Inventory.Python) { "skip" } else { "install" })
+        SoulVenv = $(if ($Inventory.SoulVenv) { "reuse" } else { "create" })
+        Ollama = $(if ($Inventory.Ollama) { "skip" } else { "install" })
+        Codex = $(if ($Inventory.Codex) { "verify-or-wire" } else { "hot-ready" })
+        Claude = $(if ($Inventory.Claude) { "verify-or-wire" } else { "hot-ready" })
+    }
+}
+
+function Show-SoulComponentInventory([pscustomobject]$Inventory, [pscustomobject]$Plan) {
+    Step "Inventario previo: reutilizo lo presente y descargo solo lo ausente"
+    Write-Host ("  Python={0} ({1}) · venv={2} · Ollama={3} · Codex={4} · Claude={5}" -f `
+        $Inventory.Python, $Inventory.PythonSource, $Inventory.SoulVenv,
+        $Inventory.Ollama, $Inventory.Codex, $Inventory.Claude)
+    Write-Host ("  Plan: Python={0} · venv={1} · Ollama={2} · Codex={3} · Claude={4}" -f `
+        $Plan.Python, $Plan.SoulVenv, $Plan.Ollama, $Plan.Codex, $Plan.Claude)
+}
+
 function Stop-SoulMcpForUpgrade([string]$VenvPath) {
     $target = [IO.Path]::GetFullPath((Join-Path $VenvPath "Scripts\soul-mcp-stdio.exe"))
     $stopped = 0
@@ -666,36 +724,34 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ("soul-platform", "0.5.6", sys.argv[1], sys.argv[2]),
-    ("soul-framework", "0.4.3", sys.argv[3], sys.argv[4]),
+    ('soul-platform', '0.5.7', sys.argv[1], sys.argv[2]),
+    ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
         raise SystemExit(2)
     distribution = m.distribution(name)
-    direct = json.loads(distribution.read_text("direct_url.json"))
-    url = str(direct.get("url") or "")
-    if urllib.parse.urlsplit(url).scheme != "file":
+    direct = json.loads(distribution.read_text('direct_url.json'))
+    url = str(direct.get('url') or '')
+    if urllib.parse.urlsplit(url).scheme != 'file':
         raise SystemExit(3)
-    if url != pathlib.Path(wheel).resolve().as_uri():
-        raise SystemExit(4)
-    hashes = (direct.get("archive_info") or {}).get("hashes") or {}
-    observed = str(hashes.get("sha256") or "").removeprefix("sha256=").lower()
+    hashes = (direct.get('archive_info') or {}).get('hashes') or {}
+    observed = str(hashes.get('sha256') or '').removeprefix('sha256=').lower()
     if observed != expected_hash.lower():
         raise SystemExit(5)
-    record = distribution.read_text("RECORD")
+    record = distribution.read_text('RECORD')
     if not record:
         raise SystemExit(6)
     for relative, encoded_hash, encoded_size in csv.reader(io.StringIO(record)):
         if not encoded_hash:
             continue
-        algorithm, expected = encoded_hash.split("=", 1)
-        if algorithm != "sha256":
+        algorithm, expected = encoded_hash.split('=', 1)
+        if algorithm != 'sha256':
             continue
         installed = pathlib.Path(distribution.locate_file(relative))
         if not installed.is_file():
             raise SystemExit(7)
         payload = installed.read_bytes()
-        actual = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
+        actual = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b'=').decode()
         if actual != expected or (encoded_size and len(payload) != int(encoded_size)):
             raise SystemExit(8)
 '@
@@ -705,6 +761,9 @@ for name, expected_version, wheel, expected_hash in (
     return $result.ExitCode -eq 0
 }
 
+$initialInventory = Get-SoulComponentInventory
+$initialPlan = Get-SoulInstallPlan $initialInventory
+Show-SoulComponentInventory $initialInventory $initialPlan
 $launcher = Ensure-Python
 Good "Python detectado"
 $resolvedPackageSource = Resolve-PackageSource
@@ -798,7 +857,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.5.6 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.5.7 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -839,8 +898,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.5.6") {
-    throw "Se requiere soul-platform 0.5.6 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.5.7") {
+    throw "Se requiere soul-platform 0.5.7 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"
@@ -848,7 +907,7 @@ if ($LASTEXITCODE -ne 0 -or $installedCoreVersion.Trim() -ne "0.4.3") {
     throw "Se requiere soul-framework 0.4.3 exacto; quedo instalada $installedCoreVersion"
 }
 if ($resolvedPackageIsBundled) {
-    $provenanceCheck = "import importlib.metadata as m,json,pathlib,sys,urllib.parse; name,wheel,expected=sys.argv[1:]; d=json.loads(m.distribution(name).read_text('direct_url.json')); url=str(d.get('url') or ''); assert urllib.parse.urlsplit(url).scheme=='file'; assert url==pathlib.Path(wheel).resolve().as_uri(); hashes=(d.get('archive_info') or {}).get('hashes') or {}; observed=str(hashes.get('sha256') or '').removeprefix('sha256=').lower(); assert observed==expected.lower()"
+    $provenanceCheck = "import importlib.metadata as m,json,sys,urllib.parse; name,wheel,expected=sys.argv[1:]; d=json.loads(m.distribution(name).read_text('direct_url.json')); url=str(d.get('url') or ''); assert urllib.parse.urlsplit(url).scheme=='file'; hashes=(d.get('archive_info') or {}).get('hashes') or {}; observed=str(hashes.get('sha256') or '').removeprefix('sha256=').lower(); assert observed==expected.lower()"
     Invoke-Checked $venvPython @("-c", $provenanceCheck, "soul-platform", $resolvedPackageSource, $BundledPlatformHash)
     Invoke-Checked $venvPython @("-c", $provenanceCheck, "soul-framework", $BundledCoreWheel, $BundledCoreHash)
     Good "Procedencia PEP 610 y hashes del bundle verificados"
@@ -977,7 +1036,7 @@ if (-not $Check -and -not $NoMachine) {
             -Model $Model `
             -CutoverActivated $cutoverActivated `
             -Runner { param($File, $Arguments) Invoke-Checked $File $Arguments }
-        if (-not $NoTray) { Invoke-Checked $trayCli @("--check") }
+        if (-not $NoTray) { Invoke-Checked $trayCli @("--headless-check") }
         Invoke-Checked $doctor @("--config", $soulConfig)
         Good "Alma persistente y arranque automatico verificados"
     } else {

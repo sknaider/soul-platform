@@ -755,7 +755,7 @@ class MCPStdioServer:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "soul-local", "version": "0.5.6"},
+                "serverInfo": {"name": "soul-local", "version": "0.5.7"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "
