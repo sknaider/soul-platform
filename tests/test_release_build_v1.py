@@ -27,6 +27,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     installer.mkdir(parents=True)
     (root / "pyproject.toml").write_text(
         '[project]\nname="soul-platform"\nversion="9.8.7"\n'
+        'dependencies=["soul-framework==0.4.3"]\n'
         '[build-system]\nrequires=["hatchling==1.32.0"]\n'
         'build-backend="hatchling.build"\n'
     )

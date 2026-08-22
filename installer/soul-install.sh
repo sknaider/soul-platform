@@ -16,11 +16,14 @@
 #   ./soul-install.sh --venv /path/to/venv
 #   ./soul-install.sh --model gemma3:1b-it-qat
 #   ./soul-install.sh --check         # verify only, no changes
+#   ./soul-install.sh --dni-credential /secure/soul-dni.json \
+#     --dni-trust-store /secure/soul-dni-trust.json \
+#     --dni-trust-store-sha256 <sha256>
 set -euo pipefail
 
 PKG="soul-platform"
-PLATFORM_VERSION="0.6.1"
-CORE_VERSION="0.4.3"
+PLATFORM_VERSION="0.7.0.dev1"
+CORE_VERSION="0.5.0.dev1"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 VENV="${SOUL_VENV:-$HOME/.soul/venv}"
 EXTRAS=""
@@ -30,6 +33,11 @@ MACHINE_KIND="${SOUL_UPSTREAM_KIND:-ollama}"
 MACHINE_BASE_URL="${SOUL_UPSTREAM_URL:-http://127.0.0.1:11434/v1}"
 INIT_MACHINE=1
 CONSENT_CLOUD_MEMORY=0
+DNI_CREDENTIAL="${SOUL_DNI_CREDENTIAL:-}"
+DNI_TRUST_STORE="${SOUL_DNI_TRUST_STORE:-}"
+DNI_TRUST_STORE_SHA256="${SOUL_DNI_TRUST_STORE_SHA256:-}"
+SIA_ENDPOINT="${SOUL_DNI_SIA_ENDPOINT:-}"
+SIA_ENROLLMENT_TOKEN_FILE="${SOUL_DNI_ENROLLMENT_TOKEN_FILE:-}"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=11
 
@@ -48,10 +56,36 @@ while [ $# -gt 0 ]; do
     --base-url) MACHINE_BASE_URL="${2:-}"; shift 2;;
     --no-machine) INIT_MACHINE=0; shift;;
     --consent-cloud-memory) CONSENT_CLOUD_MEMORY=1; shift;;
+    --dni-credential) DNI_CREDENTIAL="${2:-}"; shift 2;;
+    --dni-trust-store) DNI_TRUST_STORE="${2:-}"; shift 2;;
+    --dni-trust-store-sha256) DNI_TRUST_STORE_SHA256="${2:-}"; shift 2;;
+    --sia-endpoint) SIA_ENDPOINT="${2:-}"; shift 2;;
+    --sia-enrollment-token-file) SIA_ENROLLMENT_TOKEN_FILE="${2:-}"; shift 2;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) die "unknown arg: $1 (see --help)";;
   esac
 done
+
+dni_input_count=0
+[ -n "$DNI_CREDENTIAL" ] && dni_input_count=$((dni_input_count + 1))
+[ -n "$DNI_TRUST_STORE" ] && dni_input_count=$((dni_input_count + 1))
+[ -n "$DNI_TRUST_STORE_SHA256" ] && dni_input_count=$((dni_input_count + 1))
+[ "$dni_input_count" -eq 0 ] || [ "$dni_input_count" -eq 3 ] \
+  || die "DNI incompleto: credential, trust store y SHA-256 son un conjunto inseparable"
+if { [ -n "$SIA_ENDPOINT" ] && [ -z "$SIA_ENROLLMENT_TOKEN_FILE" ]; } \
+   || { [ -z "$SIA_ENDPOINT" ] && [ -n "$SIA_ENROLLMENT_TOKEN_FILE" ]; }; then
+  die "SIA online incompleta: endpoint y token de enrolamiento son inseparables"
+fi
+if [ -n "$SIA_ENROLLMENT_TOKEN_FILE" ] && [ ! -f "$SIA_ENROLLMENT_TOKEN_FILE" ]; then
+  die "el archivo privado del token SIA no existe o no es regular"
+fi
+if [ "$dni_input_count" -eq 3 ] && [ -n "$SIA_ENDPOINT" ]; then
+  die "elegí DNI preemitido o SIA online, nunca ambos"
+fi
+if [ -n "$DNI_TRUST_STORE_SHA256" ] \
+   && ! printf '%s' "$DNI_TRUST_STORE_SHA256" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+  die "--dni-trust-store-sha256 debe contener exactamente 64 hexadecimales"
+fi
 
 if [ -n "$EXTRAS" ]; then
   IFS=',' read -r -a requested_extras <<< "$EXTRAS"
@@ -300,6 +334,43 @@ if [ "$CHECK_ONLY" -eq 0 ] && [ "$INIT_MACHINE" -eq 1 ]; then
   esac
   SOUL_CONFIG="$SOUL_ROOT/proxy.toml"
   SOUL_DB="$SOUL_ROOT/MachineSoul.db"
+  if [ "$dni_input_count" -eq 0 ] && [ -n "$SIA_ENDPOINT" ]; then
+    log "solicitando DNI soberano a SOUL Identity Authority"
+    acquire_args=(
+      acquire-dni-online --root "$SOUL_ROOT" --endpoint "$SIA_ENDPOINT"
+      --enrollment-token-file "$SIA_ENROLLMENT_TOKEN_FILE"
+    )
+    if [ -f "$SOUL_CONFIG" ]; then
+      legacy_machine_id=$("$VPY" - "$SOUL_CONFIG" <<'PY'
+import pathlib, sys, tomllib
+raw = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+print((raw.get("soul") or {}).get("machine_soul_id") or "")
+PY
+      )
+      [ -n "$legacy_machine_id" ] || die "config legacy sin machine_soul_id"
+      acquire_args+=(--machine-soul-id "$legacy_machine_id")
+    fi
+    "$VENV/bin/soul-machine" "${acquire_args[@]}" >/dev/null \
+      || die "SIA rechazó el DNI; Core/Platform permanecen desconectados"
+    DNI_CREDENTIAL="$SOUL_ROOT/dni-delivery/soul-dni.json"
+    DNI_TRUST_STORE="$SOUL_ROOT/dni-delivery/soul-dni-trust.json"
+    DNI_TRUST_STORE_SHA256=$("$VPY" - "$DNI_TRUST_STORE" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+    )
+    dni_input_count=3
+    unset SIA_ENROLLMENT_TOKEN_FILE SOUL_DNI_ENROLLMENT_TOKEN_FILE
+    ok "DNI emitido por SOUL y ligado a esta máquina"
+  fi
+  DNI_ARGS=()
+  if [ "$dni_input_count" -eq 3 ]; then
+    DNI_ARGS=(
+      --dni-credential "$DNI_CREDENTIAL"
+      --dni-trust-store "$DNI_TRUST_STORE"
+      --dni-trust-store-sha256 "$DNI_TRUST_STORE_SHA256"
+    )
+  fi
   NATIVE_AUTOSTART=1
   MACHINE_AUTOSTART_ARGS=()
   if [ "$(uname -s)" = "Linux" ]; then
@@ -313,6 +384,14 @@ if [ "$CHECK_ONLY" -eq 0 ] && [ "$INIT_MACHINE" -eq 1 ]; then
   PROFILE=none
   LEGACY_MODEL=""
   if [ -f "$SOUL_CONFIG" ]; then
+    if ! grep -Eq '^dni_credential_file[[:space:]]*=' "$SOUL_CONFIG"; then
+      [ "$dni_input_count" -eq 3 ] \
+        || die "instalación legacy sin DNI: entregá los tres inputs públicos preemitidos por SIA"
+      log "enrolando DNI preemitido en la instalación legacy"
+      "$VENV/bin/soul-machine" enroll-dni --config "$SOUL_CONFIG" "${DNI_ARGS[@]}" \
+        || die "SIA/DNI rechazó la inscripción legacy; no migro ni inicio el alma"
+      ok "DNI legacy enrolado sin reemplazar la base existente"
+    fi
     if ! profile_output=$("$VPY" - "$SOUL_CONFIG" <<'PY'
 import pathlib, sys, tomllib
 raw = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -403,6 +482,7 @@ PY
       --kind "$MACHINE_KIND" \
       --base-url "$MACHINE_BASE_URL" \
       --model "$MACHINE_MODEL" \
+      "${DNI_ARGS[@]}" \
       "${MACHINE_AUTOSTART_ARGS[@]}"; then
       if [ "${CUTOVER_ACTIVATED:-0}" -eq 1 ]; then
         warn "el runtime BGE no inició; ejecutando rollback byte-exacto"

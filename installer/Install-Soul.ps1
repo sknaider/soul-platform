@@ -5,6 +5,12 @@ param(
     [string]$BaseUrl = $(if ($env:SOUL_UPSTREAM_URL) { $env:SOUL_UPSTREAM_URL } else { "http://127.0.0.1:11434/v1" }),
     [string]$Venv = $(if ($env:SOUL_VENV) { $env:SOUL_VENV } else { Join-Path $env:LOCALAPPDATA "SOUL\venv" }),
     [string]$PackageSource,
+    [string]$DniCredential = $env:SOUL_DNI_CREDENTIAL,
+    [string]$DniTrustStore = $env:SOUL_DNI_TRUST_STORE,
+    [string]$DniTrustStoreSha256 = $env:SOUL_DNI_TRUST_STORE_SHA256,
+    [string]$DniTrustStoreSha256File,
+    [string]$SiaEndpoint = $env:SOUL_DNI_SIA_ENDPOINT,
+    [string]$SiaEnrollmentTokenFile = $env:SOUL_DNI_ENROLLMENT_TOKEN_FILE,
     [string]$BootstrapModel = $(if ($env:SOUL_BOOTSTRAP_MODEL) { $env:SOUL_BOOTSTRAP_MODEL } else { "gemma3:1b" }),
     [switch]$RequireBundledWheel,
     [switch]$TrustCurrentOllama,
@@ -23,6 +29,43 @@ if (-not (Test-Path -LiteralPath $recoveryModule -PathType Leaf)) {
 Import-Module -Name $recoveryModule -Force
 $MinimumFreeBytes = [UInt64]3221225472
 $ApprovedBgeM3Digest = "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab"
+$PlatformVersion = "0.7.0.dev1"
+$CoreVersion = "0.5.0.dev1"
+
+if ($DniTrustStoreSha256File) {
+    if ($DniTrustStoreSha256) {
+        throw "Usa DniTrustStoreSha256 o DniTrustStoreSha256File, no ambos."
+    }
+    if (-not (Test-Path -LiteralPath $DniTrustStoreSha256File -PathType Leaf)) {
+        throw "No existe el sidecar de SHA-256 del trust store."
+    }
+    $shaItem = Get-Item -LiteralPath $DniTrustStoreSha256File -Force
+    if (($shaItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "El sidecar de SHA-256 no puede ser un enlace/reparse point."
+    }
+    $DniTrustStoreSha256 = (Get-Content -LiteralPath $DniTrustStoreSha256File -Raw).Trim()
+}
+$dniInputs = @($DniCredential, $DniTrustStore, $DniTrustStoreSha256) | Where-Object { $_ }
+if ($dniInputs.Count -ne 0 -and $dniInputs.Count -ne 3) {
+    throw "DNI incompleto: credential, trust store y SHA-256 son un conjunto inseparable."
+}
+if ($DniTrustStoreSha256 -and $DniTrustStoreSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw "DniTrustStoreSha256 debe contener exactamente 64 hexadecimales."
+}
+if ([bool]$SiaEndpoint -xor [bool]$SiaEnrollmentTokenFile) {
+    throw "SIA online incompleta: SiaEndpoint y SiaEnrollmentTokenFile son inseparables."
+}
+if ($dniInputs.Count -eq 3 -and $SiaEndpoint) {
+    throw "Elegi DNI preemitido o SIA online, nunca ambos."
+}
+$DniArguments = @()
+if ($dniInputs.Count -eq 3) {
+    $DniArguments = @(
+        "--dni-credential", $DniCredential,
+        "--dni-trust-store", $DniTrustStore,
+        "--dni-trust-store-sha256", $DniTrustStoreSha256
+    )
+}
 
 function Step([string]$Message) { Write-Host "[SOUL] $Message" -ForegroundColor Cyan }
 function Good([string]$Message) { Write-Host "  OK $Message" -ForegroundColor Green }
@@ -97,8 +140,8 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.6.1"
-        core_version = "0.4.3"
+        platform_version = $PlatformVersion
+        core_version = $CoreVersion
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
         user = $env:USERNAME
@@ -768,9 +811,9 @@ function Resolve-PackageSource {
         $wheel = $bundledWheels[0]
         $actual = $manifestEntries[$wheel.Name]
         Good "Paquete incluido verificado: $($wheel.Name) ($actual)"
-        $coreWheels = @($allBundledWheels | Where-Object { $_.Name -eq "soul_framework-0.4.3-py3-none-any.whl" })
+        $coreWheels = @($allBundledWheels | Where-Object { $_.Name -eq "soul_framework-$CoreVersion-py3-none-any.whl" })
         if ($coreWheels.Count -ne 1) {
-            throw "El bundle debe incluir exactamente un wheel soul-framework 0.4.3."
+            throw "El bundle debe incluir exactamente un wheel soul-framework $CoreVersion."
         }
         $coreWheel = $coreWheels[0]
         $coreActual = $manifestEntries[$coreWheel.Name]
@@ -982,8 +1025,8 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.6.1', sys.argv[1], sys.argv[2]),
-    ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
+    ('soul-platform', sys.argv[5], sys.argv[1], sys.argv[2]),
+    ('soul-framework', sys.argv[6], sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
         raise SystemExit(2)
@@ -1014,7 +1057,7 @@ for name, expected_version, wheel, expected_hash in (
             raise SystemExit(8)
 '@
     $result = Invoke-NativeCapture $Python @(
-        "-c", $probe, $PlatformWheel, $PlatformHash, $CoreWheel, $CoreHash
+        "-c", $probe, $PlatformWheel, $PlatformHash, $CoreWheel, $CoreHash, $PlatformVersion, $CoreVersion
     )
     return $result.ExitCode -eq 0
 }
@@ -1035,10 +1078,12 @@ $candidate = Join-Path $soulRoot "MachineSoul.bge-m3.candidate.db"
 $checkpoint = Join-Path $soulRoot "MachineSoul.bge-m3.checkpoint.json"
 Assert-MinimumFreeSpace -Paths @($Venv, $soulRoot) -RequiredBytes $MinimumFreeBytes
 $legacyMigrationRequired = $false
+$legacyDniEnrollmentRequired = $false
 $legacyModel = ""
 $cutoverActivated = $false
 if (-not $NoMachine -and (Test-Path -LiteralPath $soulConfig -PathType Leaf)) {
     $soulConfigText = Get-Content -LiteralPath $soulConfig -Raw
+    $legacyDniEnrollmentRequired = $soulConfigText -notmatch '(?m)^\s*dni_credential_file\s*='
     $embeddingMatch = [regex]::Match(
         $soulConfigText,
         '(?ms)^\s*\[embedding\]\s*\r?\n(?<body>.*?)(?=^\s*\[[^\]]+\]\s*$|\z)'
@@ -1115,7 +1160,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.6.1 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform $PlatformVersion + Core $CoreVersion ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -1156,13 +1201,13 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.6.1") {
-    throw "Se requiere soul-platform 0.6.1 exacto; quedo instalada $installedVersion"
+if ($installedVersion.Trim() -ne $PlatformVersion) {
+    throw "Se requiere soul-platform $PlatformVersion exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"
-if ($LASTEXITCODE -ne 0 -or $installedCoreVersion.Trim() -ne "0.4.3") {
-    throw "Se requiere soul-framework 0.4.3 exacto; quedo instalada $installedCoreVersion"
+if ($LASTEXITCODE -ne 0 -or $installedCoreVersion.Trim() -ne $CoreVersion) {
+    throw "Se requiere soul-framework $CoreVersion exacto; quedo instalada $installedCoreVersion"
 }
 if ($resolvedPackageIsBundled) {
     $provenanceCheck = "import importlib.metadata as m,json,sys,urllib.parse; name,wheel,expected=sys.argv[1:]; d=json.loads(m.distribution(name).read_text('direct_url.json')); url=str(d.get('url') or ''); assert urllib.parse.urlsplit(url).scheme=='file'; hashes=(d.get('archive_info') or {}).get('hashes') or {}; observed=str(hashes.get('sha256') or '').removeprefix('sha256=').lower(); assert observed==expected.lower()"
@@ -1201,6 +1246,63 @@ Good "BGE-M3 local verificado (1024 dimensiones + digest aprobado)"
 
 $machine = Join-Path $Venv "Scripts\soul-machine.exe"
 if (-not (Test-Path $machine)) { throw "Falta soul-machine.exe en el paquete instalado" }
+$hasOnlineSia = [bool]$SiaEndpoint -and [bool]$SiaEnrollmentTokenFile
+if (-not $NoMachine -and $DniArguments.Count -eq 0 -and $hasOnlineSia) {
+    Step "Solicitando DNI soberano a SOUL Identity Authority"
+    if (-not (Test-Path -LiteralPath $SiaEnrollmentTokenFile -PathType Leaf)) {
+        throw "El archivo privado del token SIA no existe o no es regular."
+    }
+    Set-SoulPrivateAcl $soulRoot
+    $tokenStaging = Join-Path $soulRoot (".soul-dni-enrollment-token." + [Guid]::NewGuid().ToString("N"))
+    try {
+        [IO.File]::WriteAllBytes($tokenStaging, [IO.File]::ReadAllBytes($SiaEnrollmentTokenFile))
+        Set-SoulPrivateAcl $tokenStaging
+        $acquireArguments = @(
+            "acquire-dni-online", "--root", $soulRoot,
+            "--endpoint", $SiaEndpoint,
+            "--enrollment-token-file", $tokenStaging
+        )
+        if (Test-Path -LiteralPath $soulConfig -PathType Leaf) {
+            $legacyMachineId = & $venvPython -c "import pathlib,sys,tomllib; print((tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')).get('soul') or {}).get('machine_soul_id') or '')" $soulConfig
+            if ($LASTEXITCODE -ne 0 -or -not $legacyMachineId.Trim()) {
+                throw "Config legacy sin machine_soul_id; SIA no puede ligar el DNI."
+            }
+            $acquireArguments += @("--machine-soul-id", $legacyMachineId.Trim())
+        }
+        Invoke-Checked $machine $acquireArguments
+        foreach ($issuedPrivate in @(
+            (Join-Path $soulRoot "soul-dni-device.pem"),
+            (Join-Path $soulRoot "soul-dni-authority.json"),
+            (Join-Path $soulRoot "dni-delivery"),
+            (Join-Path $soulRoot "dni-delivery\soul-dni.json"),
+            (Join-Path $soulRoot "dni-delivery\soul-dni-trust.json")
+        )) { Set-SoulPrivateAcl $issuedPrivate }
+    } finally {
+        if (Test-Path -LiteralPath $tokenStaging -PathType Leaf) {
+            [IO.File]::Delete($tokenStaging)
+        }
+    }
+    $DniCredential = Join-Path $soulRoot "dni-delivery\soul-dni.json"
+    $DniTrustStore = Join-Path $soulRoot "dni-delivery\soul-dni-trust.json"
+    $DniTrustStoreSha256 = (Get-FileHash -LiteralPath $DniTrustStore -Algorithm SHA256).Hash.ToLowerInvariant()
+    $DniArguments = @(
+        "--dni-credential", $DniCredential,
+        "--dni-trust-store", $DniTrustStore,
+        "--dni-trust-store-sha256", $DniTrustStoreSha256
+    )
+    $env:SOUL_DNI_ENROLLMENT_TOKEN_FILE = $null
+    $SiaEnrollmentTokenFile = $null
+    Good "DNI emitido por SOUL y ligado a esta maquina"
+}
+$hasDniInputs = $DniArguments.Count -gt 0
+if (-not $NoMachine -and $legacyDniEnrollmentRequired) {
+    if (-not $hasDniInputs) {
+        throw "Instalacion legacy sin DNI: entrega DniCredential, DniTrustStore y DniTrustStoreSha256 preemitidos por SIA."
+    }
+    Step "Enrolando DNI preemitido en la instalacion legacy"
+    Invoke-Checked $machine (@("enroll-dni", "--config", $soulConfig) + $DniArguments)
+    Good "DNI legacy enrolado sin reemplazar MachineSoul.db"
+}
 $cutover = Join-Path $Venv "Scripts\soul-machine-embedding-cutover.exe"
 if (-not (Test-Path $cutover)) { throw "Falta soul-machine-embedding-cutover.exe en el paquete instalado" }
 $autowire = Join-Path $Venv "Scripts\soul-autowire.exe"
@@ -1293,6 +1395,7 @@ if (-not $Check -and -not $NoMachine) {
             -BaseUrl $BaseUrl `
             -Model $Model `
             -CutoverActivated $cutoverActivated `
+            -DniArguments $DniArguments `
             -Runner { param($File, $Arguments) Invoke-Checked $File $Arguments }
         if (-not $NoTray) { Invoke-Checked $trayCli @("--headless-check") }
         Invoke-Checked $doctor @("--config", $soulConfig)
@@ -1378,6 +1481,14 @@ if (-not $NoMachine -and -not $Check) {
         $soulConfig,
         $soulDb,
         (Join-Path $soulRoot "proxy.token"),
+        (Join-Path $soulRoot "soul-dni.json"),
+        (Join-Path $soulRoot "soul-dni-trust.json"),
+        (Join-Path $soulRoot "soul-dni-device.pem"),
+        (Join-Path $soulRoot "soul-dni-authority.json"),
+        (Join-Path $soulRoot "dni-delivery"),
+        (Join-Path $soulRoot "dni-delivery\soul-dni.json"),
+        (Join-Path $soulRoot "dni-delivery\soul-dni-trust.json"),
+        (Join-Path $soulRoot ".dni-renew.lock"),
         (Join-Path $soulRoot "client-grants.json"),
         (Join-Path $soulRoot "autowire.sqlite3")
     )) { Set-SoulPrivateAcl $sensitive }

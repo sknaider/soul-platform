@@ -15,6 +15,7 @@ from fastapi import FastAPI, Header, HTTPException
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, Field
 from soul_framework import Soul
+from soul_framework.config import SoulConfig
 from soul_platform.auth import (
     AuthenticationDenied,
     PrincipalTokenVerifier,
@@ -136,7 +137,24 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SOUL Platform", version="0.6.1", lifespan=lifespan)
+app = FastAPI(title="SOUL Platform", version="0.7.0.dev1", lifespan=lifespan)
+
+
+def _dni_core_config(database: Path) -> SoulConfig:
+    """Bind the legacy REST surface to the same SOUL-issued machine DNI."""
+
+    credential = os.environ.get("SOUL_DNI_CREDENTIAL", "")
+    trust = os.environ.get("SOUL_DNI_TRUST_STORE", "")
+    trust_digest = os.environ.get("SOUL_DNI_TRUST_STORE_SHA256", "")
+    machine_soul_id = os.environ.get("SOUL_DNI_MACHINE_SOUL_ID", "")
+    return SoulConfig(
+        backend="sqlite",
+        backend_url=str(database),
+        dni_credential_path=credential,
+        dni_trust_store_path=trust,
+        dni_trust_store_sha256=trust_digest,
+        machine_soul_id=machine_soul_id,
+    )
 
 
 @app.get("/api/health")
@@ -161,7 +179,7 @@ async def create_soul(
     _require_local_token(authorization, x_soul_token)
     database = _db_for(request.name)
     async with Soul.create(
-        request.name, backend="sqlite", backend_url=str(database), ocean=request.ocean
+        request.name, config=_dni_core_config(database), ocean=request.ocean
     ) as soul:
         boot = await soul.boot()
     return {"created": request.name, "boot_context_preview": boot[:200]}
@@ -178,7 +196,7 @@ async def remember(
     database = _db_for(name)
     if not database.exists():
         raise HTTPException(status_code=404, detail="soul does not exist")
-    async with Soul.create(name, backend="sqlite", backend_url=str(database)) as soul:
+    async with Soul.create(name, config=_dni_core_config(database)) as soul:
         memory_id = await soul.memory.store(request.content, importance=request.importance)
     return {"soul": name, "memory_id": memory_id}
 
@@ -193,7 +211,7 @@ async def boot(
     database = _db_for(name)
     if not database.exists():
         raise HTTPException(status_code=404, detail="soul does not exist")
-    async with Soul.create(name, backend="sqlite", backend_url=str(database)) as soul:
+    async with Soul.create(name, config=_dni_core_config(database)) as soul:
         context = await soul.boot()
     return {"soul": name, "boot_context": context}
 

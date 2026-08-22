@@ -23,7 +23,7 @@ REQUIRED = {
     "receipt": "install-receipt.json",
     "mcp": "function Install-SoulClientMcp(",
     "session_start": "function Install-CodexSessionStartHook(",
-    "identity_acl": "Set-SoulPrivateAcl $soulRoot",
+    "identity_acl": 'Good "ACL Windows privada verificada (usuario actual + SYSTEM)"',
     "free_space": "function Assert-MinimumFreeSpace",
     "bge_digest": "function Assert-BgeM3Digest",
     "wheelhouse_lock": 'Join-Path $PSScriptRoot "WHEELHOUSE.sha256"',
@@ -37,6 +37,13 @@ REQUIRED = {
     "additive_client_binding": "function Enroll-SoulParentBinding",
     "tray_real_check": 'Invoke-Checked $trayCli @("--headless-check")',
     "ps51_exact_bundle_probe": "direct.get('url')",
+    "dni_all_or_none": "DNI incompleto: credential, trust store y SHA-256",
+    "dni_legacy_enroll": '"enroll-dni", "--config", $soulConfig',
+    "dni_fresh_init": "-DniArguments $DniArguments",
+    "sia_pair": "SIA online incompleta: SiaEndpoint y SiaEnrollmentTokenFile",
+    "sia_exclusive": "Elegi DNI preemitido o SIA online, nunca ambos",
+    "sia_online_acquire": '"acquire-dni-online", "--root", $soulRoot',
+    "sia_token_file": '"--enrollment-token-file", $tokenStaging',
 }
 
 BANNED = {
@@ -63,25 +70,30 @@ def verify(bundle: Path) -> dict[str, object]:
     payload = bundle.read_bytes()
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = archive.namelist()
+        installer = archive.read("Install-Soul.ps1").decode("utf-8")
+        platform_match = re.search(r'^\$PlatformVersion = "([^"]+)"$', installer, re.M)
+        core_match = re.search(r'^\$CoreVersion = "([^"]+)"$', installer, re.M)
+        if not platform_match or not core_match:
+            raise ValueError("installer must declare exact Platform/Core versions")
+        platform_version, core_version = platform_match.group(1), core_match.group(1)
         platform = [
             name
             for name in names
-            if re.fullmatch(r"soul_platform-0\.6\.1-py3-none-any\.whl", name)
+            if name == f"soul_platform-{platform_version}-py3-none-any.whl"
         ]
         core = [
             name
             for name in names
-            if re.fullmatch(r"soul_framework-0\.4\.3-py3-none-any\.whl", name)
+            if name == f"soul_framework-{core_version}-py3-none-any.whl"
         ]
         if len(platform) != 1 or len(core) != 1:
             raise ValueError(
-                "bundle must contain exact Platform 0.6.1 and Core 0.4.3 wheels"
+                f"bundle must contain exact Platform {platform_version} and Core {core_version} wheels"
             )
         for name in (*platform, *core):
             expected = archive.read(name + ".sha256").decode("ascii").split()[0].lower()
             if sha256(archive.read(name)) != expected:
                 raise ValueError(f"checksum mismatch: {name}")
-        installer = archive.read("Install-Soul.ps1").decode("utf-8")
         failures = validate_installer(installer)
         if failures:
             raise ValueError("adaptive installer gate failed: " + ", ".join(failures))
@@ -109,6 +121,13 @@ def verify(bundle: Path) -> dict[str, object]:
     }
 
 
+def write_receipt(path: Path, encoded: str) -> None:
+    """Write a verifier receipt once; never clobber an existing release receipt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(encoded)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle", type=Path)
@@ -117,8 +136,7 @@ def main() -> int:
     result = verify(args.bundle)
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.receipt:
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(encoded, encoding="utf-8")
+        write_receipt(args.receipt, encoded)
     print(encoded, end="")
     return 0
 

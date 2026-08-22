@@ -62,6 +62,12 @@ def _contract(tmp_path: Path, monkeypatch, **proxy_overrides) -> AutostartContra
     token = data / "proxy.token"
     token.write_bytes(b"a" * 32)
     token.chmod(0o600)
+    credential = data / "soul-dni.json"
+    trust = data / "soul-dni-trust.json"
+    credential.write_bytes(Path(os.environ["SOUL_DNI_CREDENTIAL"]).read_bytes())
+    trust.write_bytes(Path(os.environ["SOUL_DNI_TRUST_STORE"]).read_bytes())
+    credential.chmod(0o600)
+    trust.chmod(0o600)
     python = tmp_path / "venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text("python")
@@ -76,7 +82,11 @@ def _contract(tmp_path: Path, monkeypatch, **proxy_overrides) -> AutostartContra
     config.write_text(
         "[soul]\n"
         f'name = "MachineSoul"\ndb = "{data / "MachineSoul.db"}"\n'
-        'machine_soul_id = "12345678-1234-5678-1234-567812345678"\n'
+        f'machine_soul_id = "{os.environ["SOUL_DNI_MACHINE_SOUL_ID"]}"\n'
+        f'dni = "{os.environ["SOUL_DNI_VALUE"]}"\n'
+        f'dni_credential_file = "{credential}"\n'
+        f'dni_trust_store_file = "{trust}"\n'
+        f'dni_trust_store_sha256 = "{os.environ["SOUL_DNI_TRUST_STORE_SHA256"]}"\n'
         "[proxy]\n"
         + "\n".join(
             f'{key} = {str(value).lower() if isinstance(value, bool) else repr(value)}'

@@ -85,6 +85,17 @@ def _regular_bytes(path: Path, label: str) -> bytes:
     return path.read_bytes()
 
 
+def _exact_core_version(project: dict[str, object]) -> str:
+    matches = [
+        str(item).split("==", 1)[1]
+        for item in project.get("dependencies", [])
+        if str(item).startswith("soul-framework==")
+    ]
+    if len(matches) != 1 or not matches[0]:
+        raise ValueError("project must pin exactly one soul-framework version")
+    return matches[0]
+
+
 def _locked_wheelhouse(root: Path, wheelhouse: Path) -> tuple[bytes, dict[str, bytes]]:
     lock_payload, locked = _load_wheelhouse_lock(root)
     if wheelhouse.is_symlink() or not wheelhouse.is_dir():
@@ -117,15 +128,15 @@ def build_bundle(
         "project"
     ]
     version = str(project["version"])
+    core_version = _exact_core_version(project)
     expected_wheel = f"soul_platform-{version}-py3-none-any.whl"
     if wheel.name != expected_wheel:
         raise ValueError(f"expected regular release wheel {expected_wheel}")
     wheel_bytes = _regular_bytes(wheel, "release wheel")
-    if (
-        core_wheel.name != "soul_framework-0.4.3-py3-none-any.whl"
-    ):
-        raise ValueError("expected regular SOUL Core wheel 0.4.3")
-    core_wheel_bytes = _regular_bytes(core_wheel, "SOUL Core wheel 0.4.3")
+    expected_core_wheel = f"soul_framework-{core_version}-py3-none-any.whl"
+    if core_wheel.name != expected_core_wheel:
+        raise ValueError(f"expected regular SOUL Core wheel {core_version}")
+    core_wheel_bytes = _regular_bytes(core_wheel, f"SOUL Core wheel {core_version}")
     installer = root / "installer"
     payloads: dict[str, bytes] = {}
     for name in INSTALLER_FILES:
@@ -182,14 +193,17 @@ def build_unix_bundle(
     wheel = wheel.resolve()
     core_wheel = core_wheel.resolve()
     output = output.resolve()
+    if not (output.name.endswith(".tar.gz") or output.name.endswith(".tgz")):
+        raise ValueError("Unix bundle output must use .tar.gz or .tgz")
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
     version = str(project["version"])
+    core_version = _exact_core_version(project)
     if wheel.name != f"soul_platform-{version}-py3-none-any.whl" or not wheel.is_file() or wheel.is_symlink():
         raise ValueError("expected regular release wheel")
-    if core_wheel.name != "soul_framework-0.4.3-py3-none-any.whl" or not core_wheel.is_file() or core_wheel.is_symlink():
-        raise ValueError("expected regular SOUL Core wheel 0.4.3")
+    if core_wheel.name != f"soul_framework-{core_version}-py3-none-any.whl" or not core_wheel.is_file() or core_wheel.is_symlink():
+        raise ValueError(f"expected regular SOUL Core wheel {core_version}")
     installer = root / "installer" / "soul-install.sh"
     if not installer.is_file() or installer.is_symlink():
         raise ValueError("missing safe Unix installer")

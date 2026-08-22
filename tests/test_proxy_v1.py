@@ -8,6 +8,7 @@ import sys
 import threading
 import types
 import uuid
+import os
 from pathlib import Path
 
 import httpx
@@ -73,7 +74,7 @@ def _settings(tmp_path: Path, model: str = "brain-a") -> ProxySettings:
     return ProxySettings(
         soul_name="MachineSoul",
         soul_db=tmp_path / "MachineSoul.db",
-        machine_soul_id=str(uuid.uuid4()),
+        machine_soul_id=os.environ["SOUL_DNI_MACHINE_SOUL_ID"],
         host="127.0.0.1",
         port=11435,
         require_auth=True,
@@ -85,6 +86,10 @@ def _settings(tmp_path: Path, model: str = "brain-a") -> ProxySettings:
         t5_tenant="local-machine",
         t5_owner_subject="local-owner",
         t5_state_db=tmp_path / "MachineSoul.t5-egress.sqlite3",
+        soul_dni=os.environ["SOUL_DNI_VALUE"],
+        dni_credential_file=Path(os.environ["SOUL_DNI_CREDENTIAL"]),
+        dni_trust_store_file=Path(os.environ["SOUL_DNI_TRUST_STORE"]),
+        dni_trust_store_sha256=os.environ["SOUL_DNI_TRUST_STORE_SHA256"],
     )
 
 
@@ -172,6 +177,10 @@ async def _seed(settings: ProxySettings):
         embedding_provider="bge-m3",
         embedding_dimensions=1024,
         memory_vector_index="auto",
+        dni_credential_path=str(settings.dni_credential_file),
+        dni_trust_store_path=str(settings.dni_trust_store_file),
+        dni_trust_store_sha256=settings.dni_trust_store_sha256,
+        machine_soul_id=settings.machine_soul_id,
     )
     async with Soul.create(settings.soul_name, config=config) as soul:
         await soul.memory.store("La clave de continuidad es ORQUIDEA-127387.", importance=10)
@@ -184,6 +193,10 @@ def _soul_config(settings: ProxySettings) -> SoulConfig:
         embedding_provider="bge-m3",
         embedding_dimensions=1024,
         memory_vector_index="auto",
+        dni_credential_path=str(settings.dni_credential_file),
+        dni_trust_store_path=str(settings.dni_trust_store_file),
+        dni_trust_store_sha256=settings.dni_trust_store_sha256,
+        machine_soul_id=settings.machine_soul_id,
     )
 
 
@@ -219,6 +232,63 @@ async def test_auth_health_ready_and_no_secret_leak(tmp_path):
         "soul_loaded": True,
         "brain_reachable": True,
     }
+
+
+async def test_live_proxy_disconnects_when_soul_dni_renewal_fails(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    app = create_app(settings, upstream_transport=_transport([]))
+    monkeypatch.setattr(
+        ProxySettings,
+        "verified_dni",
+        lambda self, audience="soul-platform": (_ for _ in ()).throw(
+            ValueError("expired")
+        ),
+    )
+    response = await _request(app, "GET", "/health")
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "SOUL DNI renewal required",
+        "soul_connected": False,
+    }
+
+
+async def test_live_proxy_rejects_signed_identity_substitution(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    valid = settings.verified_dni("soul-platform")
+    from soul_framework.identity.dni import VerifiedSoulDNI, generate_soul_id
+
+    attacker_soul_id = generate_soul_id()
+    attacker = VerifiedSoulDNI(
+        **{
+            **valid.__dict__,
+            "soul_id": attacker_soul_id,
+            "soul_dni": f"urn:soul:agent:{attacker_soul_id}",
+            "sequence": valid.sequence + 1,
+        }
+    )
+    app = create_app(settings, upstream_transport=_transport([]))
+    monkeypatch.setattr("soul_platform.proxy.verify_soul_dni", lambda *a, **k: attacker)
+    response = await _request(app, "GET", "/health")
+    assert response.status_code == 503
+    assert response.json()["soul_connected"] is False
+
+
+async def test_proxy_discards_response_if_dni_expires_mid_request(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    app = create_app(settings, upstream_transport=_transport([]))
+    checks = 0
+
+    def expires_after_ingress(self, audience="soul-platform"):
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            raise ValueError("expired")
+
+    monkeypatch.setattr(ProxySettings, "verified_dni", expires_after_ingress)
+    response = await _request(app, "GET", "/health")
+    assert checks == 2
+    assert response.status_code == 503
+    assert response.json()["soul_connected"] is False
 
 
 async def test_ready_rejects_reachable_upstream_without_configured_model(tmp_path):

@@ -995,6 +995,10 @@ def _soul_config(settings: ProxySettings) -> SoulConfig:
         embedding_provider=settings.embedding_provider,
         embedding_dimensions=settings.embedding_dimensions,
         memory_vector_index=settings.memory_vector_index,
+        dni_credential_path=str(settings.dni_credential_file),
+        dni_trust_store_path=str(settings.dni_trust_store_file),
+        dni_trust_store_sha256=settings.dni_trust_store_sha256,
+        machine_soul_id=settings.machine_soul_id,
     )
 
 
@@ -1217,10 +1221,12 @@ class MCPStdioServer:
         *,
         scopes: set[str] | frozenset[str],
         scope_resolver: Callable[[], frozenset[str]] | None = None,
+        dni_verifier: Callable[[], Any] | None = None,
     ) -> None:
         self.runner = runner
         self.scopes = frozenset(scopes)
         self.scope_resolver = scope_resolver
+        self.dni_verifier = dni_verifier
         self.session_id: str | None = None
         self.expires_at = 0.0
 
@@ -1234,6 +1240,11 @@ class MCPStdioServer:
     async def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
             raise ValueError("invalid JSON-RPC request")
+        if self.dni_verifier is not None:
+            try:
+                self.dni_verifier()
+            except Exception as exc:
+                raise PermissionError("SOUL DNI renewal required") from exc
         method = request.get("method")
         request_id = request.get("id")
         if method and str(method).startswith("notifications/"):
@@ -1246,7 +1257,7 @@ class MCPStdioServer:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": True}},
-                "serverInfo": {"name": "soul-local", "version": "0.6.1"},
+                "serverInfo": {"name": "soul-local", "version": "0.7.0.dev1"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "
@@ -1271,6 +1282,11 @@ class MCPStdioServer:
             if required_scope is None or required_scope not in self._current_scopes():
                 raise PermissionError("SOUL tool scope denied")
             result = await self.runner(tool_name, params.get("arguments", {}))
+            if self.dni_verifier is not None:
+                try:
+                    self.dni_verifier()
+                except Exception as exc:
+                    raise PermissionError("SOUL DNI renewal required") from exc
             # The private-context consent is bound to an exact snapshot.  A
             # writer may change that snapshot while an async tool is running;
             # never serialize bytes authorized against the stale snapshot.
@@ -1288,6 +1304,9 @@ class MCPStdioServer:
 
 
 async def serve(config_path: Path, client_id: str) -> None:
+    from soul_platform.dni_online import attempt_startup_renewal
+
+    await asyncio.to_thread(attempt_startup_renewal, config_path)
     settings = ProxySettings.from_toml(config_path)
     entry = verify_client_grant(settings, client_id, config_path=config_path)
     scopes = entry.get("scopes")
@@ -1316,6 +1335,7 @@ async def serve(config_path: Path, client_id: str) -> None:
         ),
         scopes=frozenset(),
         scope_resolver=resolve_scopes,
+        dni_verifier=lambda: settings.verified_dni("soul-platform"),
     )
     while True:
         line = await asyncio.to_thread(sys.stdin.buffer.readline)
