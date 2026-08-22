@@ -15,7 +15,7 @@ cd bundle
 ./soul-install.sh --model gemma3:1b-it-qat
 ```
 
-The supported public install is a release bundle containing Platform 0.5.7,
+The supported public install is a release bundle containing Platform 0.5.8,
 Core 0.4.3 and SHA-256 files. `soul-install.sh` auto-discovers and verifies
 those wheels when they sit beside the script. The package is not currently
 published on PyPI, so a bare `pip install soul-platform` is intentionally not

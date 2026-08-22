@@ -163,13 +163,20 @@ def test_windows_reconcile_syncs_codex_app_grants_without_blocking_discovery(
         "soul_platform.autowire.manager.sync_codex_app_grants",
         lambda settings, **kwargs: calls.append((settings, kwargs)) or 2,
     )
+    claude_calls = []
+    monkeypatch.setattr(
+        "soul_platform.autowire.manager.sync_claude_app_grants",
+        lambda settings, **kwargs: claude_calls.append((settings, kwargs)) or 2,
+    )
     manager = AutoWireManager(result.root)
     status = manager.reconcile()
     assert len(calls) == 1
+    assert len(claude_calls) == 1
     assert calls[0][1]["config_path"] == result.config
     assert calls[0][1]["server_executable"] == (
         result.root / "venv" / "Scripts" / "soul-mcp-stdio.exe"
     )
+    assert claude_calls[0][1] == calls[0][1]
     assert status["discovery_errors"] == {}
     assert status["providers"][0]["state"] == "ACTIVE"
 
@@ -179,8 +186,12 @@ def test_windows_reconcile_syncs_codex_app_grants_without_blocking_discovery(
     monkeypatch.setattr(
         "soul_platform.autowire.manager.sync_codex_app_grants", fail_sync
     )
+    monkeypatch.setattr(
+        "soul_platform.autowire.manager.sync_claude_app_grants", fail_sync
+    )
     degraded = manager.reconcile()
     assert degraded["discovery_errors"]["codex-app-grant"] == "ValueError"
+    assert degraded["discovery_errors"]["claude-app-grant"] == "ValueError"
     assert degraded["providers"][0]["state"] == "ACTIVE"
 
 

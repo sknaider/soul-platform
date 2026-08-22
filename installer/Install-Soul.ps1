@@ -96,7 +96,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.5.7"
+        platform_version = "0.5.8"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -223,6 +223,47 @@ function Resolve-CodexAppParentBinaries {
         )
     }
     return @($parents | Sort-Object -Unique)
+}
+
+function Resolve-ClaudeAppParentBinaries {
+    # Claude Desktop launches MCP through a per-user Claude Code runtime and,
+    # depending on the Desktop build, may launch it directly from Claude.exe.
+    # Bind only the OS-registered app plus the exact current runtime bytes.
+    $package = Get-AppxPackage -Name "Claude" -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $package) { return @() }
+    $desktop = Join-Path $package.InstallLocation "app\Claude.exe"
+    if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) {
+        throw "HOLD: Claude Desktop esta registrado pero su ejecutable no existe"
+    }
+    $parents = @($desktop)
+    $runtimeRoot = Join-Path $env:APPDATA "Claude\claude-code"
+    if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+        $live = @(
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.ExecutablePath -and
+                    $_.ExecutablePath.StartsWith($runtimeRoot, [StringComparison]::OrdinalIgnoreCase) -and
+                    [IO.Path]::GetFileName($_.ExecutablePath) -ieq "claude.exe"
+                } |
+                ForEach-Object { $_.ExecutablePath } |
+                Sort-Object -Unique
+        )
+        if ($live.Count -gt 0) {
+            $parents += $live
+        } else {
+            $latest = Get-ChildItem -LiteralPath $runtimeRoot -Filter "claude.exe" -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\claude-code\\[^\\]+\\claude\.exe$' } |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 1
+            if ($latest) { $parents += $latest.FullName }
+        }
+    }
+    $unique = @($parents | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Sort-Object -Unique)
+    if ($unique.Count -gt 8) {
+        throw "HOLD: encontre demasiadas superficies de Claude Desktop"
+    }
+    return $unique
 }
 
 function Set-SoulPrivateAcl([string]$Path) {
@@ -373,6 +414,7 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
     $needCodex = $false
     $needClaude = $false
     $codexAppParents = @(Resolve-CodexAppParentBinaries)
+    $claudeAppParents = @(Resolve-ClaudeAppParentBinaries)
     $codexCommand = Get-Command "codex" -ErrorAction SilentlyContinue
     $codexCli = $null
     if ($codexCommand) {
@@ -389,9 +431,17 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
             $needCodex = $true
         }
     }
-    $claude = Get-Command "claude" -ErrorAction SilentlyContinue
-    if ($claude) {
-        $claudeCli = Resolve-NativeCli $claude
+    $claudeCommand = Get-Command "claude" -ErrorAction SilentlyContinue
+    $claudeCli = $null
+    if ($claudeCommand) {
+        $claudeCli = Resolve-NativeCli $claudeCommand
+    } else {
+        $claudeCli = @($claudeAppParents | Where-Object {
+            $_ -match '\\Claude\\claude-code\\[^\\]+\\claude\.exe$'
+        } | Select-Object -First 1)
+        if ($claudeCli.Count -eq 1) { $claudeCli = $claudeCli[0] } else { $claudeCli = $null }
+    }
+    if ($claudeCli) {
         if (-not (Test-ClaudeSoulMcpShape $claudeCli $Mcp $Config)) {
             $existing = Invoke-NativeCapture $claudeCli @("mcp", "get", "soul-local")
             if (-not (Test-SoulMcpMissingText ($existing.Output -join "`n"))) {
@@ -436,9 +486,12 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
                 throw "Codex no confirmo el MCP local de SOUL"
             }
         }
-        if ($claude) {
+        if ($claudeCli) {
             $claudeParent = Resolve-ClientParentBinary "claude" $claudeCli
             Enroll-SoulParentBinding $Mcp $Config "claude" $claudeParent
+            foreach ($appParent in $claudeAppParents) {
+                Enroll-SoulParentBinding $Mcp $Config "claude" $appParent
+            }
             if (-not (Assert-ClaudeSoulMcp $claudeCli $Mcp $Config)) {
                 throw "Claude no confirmo el MCP local de SOUL"
             }
@@ -454,7 +507,7 @@ function Install-SoulClientMcp([string]$Mcp, [string]$Config) {
         throw
     }
     if ($codexCli) { $wired += "codex" }
-    if ($claude) { $wired += "claude" }
+    if ($claudeCli) { $wired += "claude" }
     return $wired
 }
 
@@ -660,13 +713,14 @@ function Get-SoulComponentInventory {
     $ollama = Find-Ollama
     $codex = Get-Command "codex" -ErrorAction SilentlyContinue
     $claude = Get-Command "claude" -ErrorAction SilentlyContinue
+    $claudeApp = @(Resolve-ClaudeAppParentBinaries)
     return [pscustomobject]@{
         Python = [bool]$python
         PythonSource = $(if ($python) { "{0} {1}" -f $python.Exe, (@($python.Args) -join " ") } else { "missing" })
         SoulVenv = (Test-Path -LiteralPath (Join-Path $Venv "Scripts\python.exe") -PathType Leaf)
         Ollama = [bool]$ollama
         Codex = [bool]$codex
-        Claude = [bool]$claude
+        Claude = ([bool]$claude -or $claudeApp.Count -gt 0)
     }
 }
 
@@ -724,7 +778,7 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.5.7', sys.argv[1], sys.argv[2]),
+    ('soul-platform', '0.5.8', sys.argv[1], sys.argv[2]),
     ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
@@ -857,7 +911,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.5.7 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.5.8 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -898,8 +952,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.5.7") {
-    throw "Se requiere soul-platform 0.5.7 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.5.8") {
+    throw "Se requiere soul-platform 0.5.8 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"

@@ -413,6 +413,66 @@ ConvertTo-Json -InputObject @($rows | Sort-Object -Unique) -Compress
     return result
 
 
+def discover_windows_claude_app_parents() -> list[Path]:
+    """Discover the registered Claude Desktop app and its current local runtime.
+
+    Claude Desktop starts MCP either behind its AppX executable or behind the
+    versioned Claude Code runtime it provisions under the current user's
+    profile.  Both surfaces remain exact path+hash grants; no name wildcard is
+    accepted.
+    """
+
+    if os.name != "nt":
+        return []
+    script = r'''
+$ErrorActionPreference='Stop'
+$package=Get-AppxPackage -Name Claude | Sort-Object Version -Descending | Select-Object -First 1
+if(-not $package){ConvertTo-Json -InputObject @() -Compress;exit 0}
+$desktop=Join-Path $package.InstallLocation 'app\Claude.exe'
+if(-not (Test-Path -LiteralPath $desktop -PathType Leaf)){throw 'Claude Desktop executable missing'}
+$rows=@($desktop)
+$runtimeRoot=Join-Path $env:APPDATA 'Claude\claude-code'
+if(Test-Path -LiteralPath $runtimeRoot -PathType Container){
+  $live=@(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith($runtimeRoot,[StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFileName($_.ExecutablePath) -ieq 'claude.exe'
+      } | ForEach-Object {$_.ExecutablePath} | Sort-Object -Unique
+  )
+  if($live.Count -gt 0){
+    $rows += $live
+  } else {
+    $latest=Get-ChildItem -LiteralPath $runtimeRoot -Filter claude.exe -File -Recurse -ErrorAction SilentlyContinue |
+      Where-Object {$_.FullName -match '\\claude-code\\[^\\]+\\claude\.exe$'} |
+      Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if($latest){$rows += $latest.FullName}
+  }
+}
+ConvertTo-Json -InputObject @($rows | Sort-Object -Unique) -Compress
+'''
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, timeout=15, check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        raise ValueError("cannot attest Claude Desktop package")
+    rows = json.loads(completed.stdout or "[]")
+    if isinstance(rows, str):
+        rows = [rows]
+    if not isinstance(rows, list) or len(rows) > 8:
+        raise ValueError("Claude Desktop parent discovery is invalid")
+    result: list[Path] = []
+    for raw in rows:
+        path = Path(str(raw)).expanduser().resolve(strict=True)
+        if not path.is_file() or path.name.casefold() != "claude.exe":
+            raise ValueError("Claude Desktop parent discovery is invalid")
+        result.append(path)
+    return result
+
+
 def enroll_client(
     settings: ProxySettings,
     client_id: str,
@@ -626,6 +686,35 @@ def sync_codex_app_grants(
     return added
 
 
+def sync_claude_app_grants(
+    settings: ProxySettings,
+    *,
+    config_path: Path,
+    server_executable: Path,
+    parents: list[Path] | None = None,
+) -> int:
+    """Idempotently bind current exact Claude Desktop surfaces."""
+
+    candidates = discover_windows_claude_app_parents() if parents is None else parents
+    grant_path = ensure_client_grants(settings)
+    added = 0
+    for parent in candidates:
+        before = json.loads(grant_path.read_text()).get("clients", {}).get("claude", {})
+        before_count = len(_entry_parent_bindings(before)) if before else 0
+        enroll_client(
+            settings,
+            "claude",
+            parent_executable=parent,
+            server_executable=server_executable,
+            config_path=config_path,
+            rotate_existing=True,
+            add_parent_binding=True,
+        )
+        after = json.loads(grant_path.read_text())["clients"]["claude"]
+        added += max(0, len(_entry_parent_bindings(after)) - before_count)
+    return added
+
+
 def _soul_config(settings: ProxySettings) -> SoulConfig:
     return SoulConfig(
         backend="sqlite",
@@ -755,7 +844,7 @@ class MCPStdioServer:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "soul-local", "version": "0.5.7"},
+                "serverInfo": {"name": "soul-local", "version": "0.5.8"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "
