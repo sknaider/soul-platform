@@ -434,7 +434,7 @@ function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]
         $owned.Count -eq 0
     })
     $sessionStart = @($preserved) + @([ordered]@{
-        matcher = "^(startup|resume|clear|compact)$"
+        matcher = "^(startup|resume|clear|compact|fork)$"
         hooks = @($handler)
     })
     $document.hooks | Add-Member -NotePropertyName SessionStart -NotePropertyValue $sessionStart -Force

@@ -84,33 +84,11 @@ def _select_windows_client_ancestor(
     base_python = ntpath.normcase(
         ntpath.normpath(str(base_python_executable or getattr(sys, "_base_executable", "")))
     )
-    windows_root = ntpath.normcase(os.environ.get("SystemRoot", r"C:\Windows"))
-    trusted_shells = {
-        ntpath.normcase(ntpath.join(windows_root, "System32", "cmd.exe")),
-        ntpath.normcase(
-            ntpath.join(
-                windows_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
-            )
-        ),
-    }
+    trusted_shells = _trusted_windows_shell_relays()
     # Claude Desktop/Code executes SessionStart command hooks through the Git for
     # Windows bash relay.  Treat only vendor installation paths as launch
     # intermediates: skipping every executable named ``bash.exe`` would let an
     # untrusted lookalike evade the immutable client binding.
-    git_roots = {
-        os.environ.get("ProgramFiles", r"C:\Program Files"),
-        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-        ntpath.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
-    }
-    for root in git_roots:
-        if not root:
-            continue
-        trusted_shells.update(
-            {
-                ntpath.normcase(ntpath.join(root, "Git", "usr", "bin", "bash.exe")),
-                ntpath.normcase(ntpath.join(root, "Git", "bin", "bash.exe")),
-            }
-        )
     for item in ancestors:
         candidate = ntpath.normcase(ntpath.normpath(str(item.get("path") or "")))
         name = ntpath.basename(candidate)
@@ -129,6 +107,66 @@ def _select_windows_client_ancestor(
             break
         return item
     raise ValueError("cannot resolve MCP client behind the private launcher chain")
+
+
+def _trusted_windows_shell_relays() -> set[str]:
+    """Resolve protected Windows/Git relay paths without trusting env vars."""
+
+    # Static values make path-selection tests deterministic on non-Windows.
+    # Production Windows values come only from WinAPI and protected HKLM.
+    if os.name != "nt":
+        windows_root = r"C:\Windows"
+        program_files = [r"C:\Program Files", r"C:\Program Files (x86)"]
+    else:
+        import ctypes
+        import winreg
+
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+        if length <= 0 or length >= len(buffer):
+            raise ValueError("cannot resolve protected Windows directory")
+        windows_root = buffer.value
+        program_files: list[str] = []
+        access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+                0,
+                access,
+            ) as key:
+                for name in ("ProgramFilesDir", "ProgramFilesDir (x86)"):
+                    try:
+                        value, _kind = winreg.QueryValueEx(key, name)
+                    except OSError:
+                        continue
+                    if (
+                        isinstance(value, str)
+                        and "%" not in value
+                        and ntpath.isabs(value)
+                    ):
+                        program_files.append(value)
+        except OSError as exc:
+            raise ValueError("cannot resolve protected Program Files directories") from exc
+        if not program_files:
+            raise ValueError("cannot resolve protected Program Files directories")
+
+    trusted = {
+        ntpath.normcase(ntpath.join(windows_root, "System32", "cmd.exe")),
+        ntpath.normcase(
+            ntpath.join(
+                windows_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+            )
+        ),
+    }
+    for root in program_files:
+        trusted.update(
+            {
+                ntpath.normcase(ntpath.join(root, "Git", "usr", "bin", "bash.exe")),
+                ntpath.normcase(ntpath.join(root, "Git", "bin", "bash.exe")),
+            }
+        )
+    return trusted
 
 
 def _parent_identity() -> ProcessIdentity:
@@ -841,7 +879,7 @@ def sync_claude_session_start_hook(
         ]
     )
     desired_group = {
-        "matcher": "^(startup|resume|clear|compact)$",
+        "matcher": "^(startup|resume|clear|compact|fork)$",
         "hooks": [{"type": "command", "command": command, "timeout": 25}],
     }
     target.parent.mkdir(parents=True, exist_ok=True)
