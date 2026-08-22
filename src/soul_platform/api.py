@@ -136,7 +136,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SOUL Platform", version="0.5.9", lifespan=lifespan)
+app = FastAPI(title="SOUL Platform", version="0.5.10", lifespan=lifespan)
 
 
 @app.get("/api/health")

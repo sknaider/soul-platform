@@ -1,6 +1,6 @@
 [project]
 name = "soul-platform"
-version = "0.5.9"
+version = "0.5.10"
 description = "SOUL Platform — contained agent runtime, coordination and autonomy for SOUL Core"
 readme = "README.md"
 requires-python = ">=3.11"

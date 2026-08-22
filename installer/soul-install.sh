@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PKG="soul-platform"
-PLATFORM_VERSION="0.5.9"
+PLATFORM_VERSION="0.5.10"
 CORE_VERSION="0.4.3"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 VENV="${SOUL_VENV:-$HOME/.soul/venv}"

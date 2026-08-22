@@ -64,10 +64,10 @@ def verify(bundle: Path) -> dict[str, object]:
     payload = bundle.read_bytes()
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = archive.namelist()
-        platform = [name for name in names if re.fullmatch(r"soul_platform-0\.5\.9-py3-none-any\.whl", name)]
+        platform = [name for name in names if re.fullmatch(r"soul_platform-0\.5\.10-py3-none-any\.whl", name)]
         core = [name for name in names if re.fullmatch(r"soul_framework-0\.4\.3-py3-none-any\.whl", name)]
         if len(platform) != 1 or len(core) != 1:
-            raise ValueError("bundle must contain exact Platform 0.5.9 and Core 0.4.3 wheels")
+            raise ValueError("bundle must contain exact Platform 0.5.10 and Core 0.4.3 wheels")
         for name in (*platform, *core):
             expected = archive.read(name + ".sha256").decode("ascii").split()[0].lower()
             if sha256(archive.read(name)) != expected:

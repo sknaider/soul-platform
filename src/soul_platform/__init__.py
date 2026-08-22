@@ -32,7 +32,7 @@ from soul_platform.receipts import (
 from soul_platform.runtime import AgentRuntime, ProtocolViolation, SubprocessLLMProvider
 from soul_platform.sandbox import DockerSandbox, DockerTool, ImageTrustStore, SandboxPolicy
 
-__version__ = "0.5.9"
+__version__ = "0.5.10"
 
 __all__ = [
     "AgencyModule",

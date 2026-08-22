@@ -30,7 +30,7 @@ def _requests() -> str:
             "params": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "soul-codex-session-start", "version": "0.5.9"},
+                "clientInfo": {"name": "soul-codex-session-start", "version": "0.5.10"},
             },
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="soul-codex-session-start")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--server-executable", type=Path, required=True)
-    parser.add_argument("--client-id", choices=("codex",), default="codex")
+    parser.add_argument("--client-id", choices=("codex", "claude"), default="codex")
     parser.add_argument("--timeout", type=float, default=20.0)
     args = parser.parse_args(argv)
     return run_hook(

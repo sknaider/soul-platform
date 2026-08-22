@@ -19,6 +19,7 @@ from soul_platform.bootstrap import _atomic_config, render_config, switch_upstre
 from soul_platform.mcp_stdio import (
     sync_claude_app_grants,
     sync_claude_desktop_mcp_config,
+    sync_claude_session_start_hook,
     sync_codex_app_grants,
 )
 from soul_platform.proxy import ProxySettings
@@ -145,6 +146,16 @@ class AutoWireManager:
                 )
             except (OSError, ValueError) as exc:
                 errors["claude-desktop-config"] = type(exc).__name__
+            try:
+                sync_claude_session_start_hook(
+                    config_path=self.config_path,
+                    server_executable=server_executable,
+                    hook_executable=(
+                        self.root / "venv" / "Scripts" / "soul-codex-session-start.exe"
+                    ),
+                )
+            except (OSError, ValueError) as exc:
+                errors["claude-session-hook"] = type(exc).__name__
         seen: set[str] = set()
         active_id: str | None = None
         for candidate in candidates:
