@@ -84,15 +84,11 @@ def _select_windows_client_ancestor(
     base_python = ntpath.normcase(
         ntpath.normpath(str(base_python_executable or getattr(sys, "_base_executable", "")))
     )
-    windows_root = ntpath.normcase(os.environ.get("SystemRoot", r"C:\Windows"))
-    trusted_shells = {
-        ntpath.normcase(ntpath.join(windows_root, "System32", "cmd.exe")),
-        ntpath.normcase(
-            ntpath.join(
-                windows_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
-            )
-        ),
-    }
+    trusted_shells = _trusted_windows_shell_relays()
+    # Claude Desktop/Code executes SessionStart command hooks through the Git for
+    # Windows bash relay.  Treat only vendor installation paths as launch
+    # intermediates: skipping every executable named ``bash.exe`` would let an
+    # untrusted lookalike evade the immutable client binding.
     for item in ancestors:
         candidate = ntpath.normcase(ntpath.normpath(str(item.get("path") or "")))
         name = ntpath.basename(candidate)
@@ -111,6 +107,66 @@ def _select_windows_client_ancestor(
             break
         return item
     raise ValueError("cannot resolve MCP client behind the private launcher chain")
+
+
+def _trusted_windows_shell_relays() -> set[str]:
+    """Resolve protected Windows/Git relay paths without trusting env vars."""
+
+    # Static values make path-selection tests deterministic on non-Windows.
+    # Production Windows values come only from WinAPI and protected HKLM.
+    if os.name != "nt":
+        windows_root = r"C:\Windows"
+        program_files = [r"C:\Program Files", r"C:\Program Files (x86)"]
+    else:
+        import ctypes
+        import winreg
+
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetWindowsDirectoryW(buffer, len(buffer))
+        if length <= 0 or length >= len(buffer):
+            raise ValueError("cannot resolve protected Windows directory")
+        windows_root = buffer.value
+        program_files: list[str] = []
+        access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+                0,
+                access,
+            ) as key:
+                for name in ("ProgramFilesDir", "ProgramFilesDir (x86)"):
+                    try:
+                        value, _kind = winreg.QueryValueEx(key, name)
+                    except OSError:
+                        continue
+                    if (
+                        isinstance(value, str)
+                        and "%" not in value
+                        and ntpath.isabs(value)
+                    ):
+                        program_files.append(value)
+        except OSError as exc:
+            raise ValueError("cannot resolve protected Program Files directories") from exc
+        if not program_files:
+            raise ValueError("cannot resolve protected Program Files directories")
+
+    trusted = {
+        ntpath.normcase(ntpath.join(windows_root, "System32", "cmd.exe")),
+        ntpath.normcase(
+            ntpath.join(
+                windows_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+            )
+        ),
+    }
+    for root in program_files:
+        trusted.update(
+            {
+                ntpath.normcase(ntpath.join(root, "Git", "usr", "bin", "bash.exe")),
+                ntpath.normcase(ntpath.join(root, "Git", "bin", "bash.exe")),
+            }
+        )
+    return trusted
 
 
 def _parent_identity() -> ProcessIdentity:
@@ -784,6 +840,102 @@ def sync_claude_desktop_mcp_config(
         return True
 
 
+def sync_claude_session_start_hook(
+    *,
+    config_path: Path,
+    server_executable: Path,
+    hook_executable: Path,
+    settings_path: Path | None = None,
+    installed_parents: list[Path] | None = None,
+) -> bool:
+    """Eagerly attach SOUL before Claude's first model response.
+
+    Claude's MCP configuration exposes the tools; its SessionStart hook makes
+    the connection automatic by calling ``soul_boot_context`` before the first
+    response. Existing hooks are preserved and concurrent edits fail closed.
+    """
+
+    if settings_path is None:
+        if os.name != "nt":
+            return False
+        parents = (
+            discover_windows_claude_app_parents()
+            if installed_parents is None else installed_parents
+        )
+        if not parents:
+            return False
+        profile = os.environ.get("USERPROFILE")
+        if not profile:
+            raise ValueError("USERPROFILE is required for Claude SessionStart")
+        settings_path = Path(profile) / ".claude" / "settings.json"
+    target = settings_path.expanduser()
+    hook = hook_executable.resolve(strict=True)
+    server = server_executable.resolve(strict=True)
+    config = config_path.resolve(strict=True)
+    command = subprocess.list2cmdline(
+        [
+            str(hook), "--config", str(config), "--server-executable", str(server),
+            "--client-id", "claude",
+        ]
+    )
+    desired_group = {
+        "matcher": "^(startup|resume|clear|compact|fork)$",
+        "hooks": [{"type": "command", "command": command, "timeout": 25}],
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _GRANT_THREAD_LOCK:
+        before = target.read_bytes() if target.exists() else None
+        try:
+            document = json.loads(before.decode("utf-8-sig")) if before is not None else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Claude settings are not valid JSON") from exc
+        if not isinstance(document, dict):
+            raise ValueError("Claude settings root must be an object")
+        hooks = document.setdefault("hooks", {})
+        if not isinstance(hooks, dict):
+            raise ValueError("Claude settings hooks must be an object")
+        groups = hooks.setdefault("SessionStart", [])
+        if not isinstance(groups, list):
+            raise ValueError("Claude SessionStart hooks must be an array")
+
+        def is_owned(group: object) -> bool:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                return False
+            return any(
+                isinstance(handler, dict)
+                and handler.get("type") == "command"
+                and str(hook).casefold() in str(handler.get("command") or "").casefold()
+                and "--client-id claude" in str(handler.get("command") or "").casefold()
+                for handler in group["hooks"]
+            )
+
+        updated = [group for group in groups if not is_owned(group)] + [desired_group]
+        if updated == groups:
+            return False
+        hooks["SessionStart"] = updated
+        payload = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        fd, raw_temporary = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+        )
+        temporary = Path(raw_temporary)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            current = target.read_bytes() if target.exists() else None
+            if current != before:
+                raise ValueError("Claude settings changed concurrently")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        verified = json.loads(target.read_text(encoding="utf-8"))
+        live_groups = verified.get("hooks", {}).get("SessionStart", [])
+        if sum(is_owned(group) for group in live_groups) != 1:
+            raise ValueError("Claude SessionStart post-write verification failed")
+        return True
+
+
 def _soul_config(settings: ProxySettings) -> SoulConfig:
     return SoulConfig(
         backend="sqlite",
@@ -913,7 +1065,7 @@ class MCPStdioServer:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "soul-local", "version": "0.5.9"},
+                "serverInfo": {"name": "soul-local", "version": "0.5.10"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "

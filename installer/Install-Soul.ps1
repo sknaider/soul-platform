@@ -96,7 +96,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.5.9"
+        platform_version = "0.5.10"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -394,6 +394,77 @@ function Install-CodexSessionStartHook([string]$HookExe, [string]$Mcp, [string]$
         throw
     }
     return $hooksPath
+}
+
+function Install-ClaudeSessionStartHook([string]$HookExe, [string]$Mcp, [string]$Config) {
+    if (-not (Test-Path -LiteralPath $HookExe -PathType Leaf)) {
+        throw "Falta soul-codex-session-start.exe en el paquete instalado"
+    }
+    $claudeRoot = Join-Path $env:USERPROFILE ".claude"
+    $settingsPath = Join-Path $claudeRoot "settings.json"
+    [IO.Directory]::CreateDirectory($claudeRoot) | Out-Null
+    $beforeHash = Get-OptionalFileHash $settingsPath
+    $backup = Backup-ClientConfig $settingsPath "claude-hooks"
+    if ($beforeHash -eq "__MISSING__") {
+        $document = [pscustomobject]@{}
+    } else {
+        try {
+            $document = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        } catch {
+            throw "HOLD: Claude settings.json no es JSON valido; preservo sus bytes"
+        }
+    }
+    if ($document -isnot [Management.Automation.PSCustomObject]) {
+        throw "HOLD: Claude settings.json no contiene un objeto JSON"
+    }
+    if (-not $document.PSObject.Properties['hooks']) {
+        $document | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
+    } elseif ($document.hooks -isnot [Management.Automation.PSCustomObject]) {
+        throw "HOLD: hooks de Claude no es un objeto"
+    }
+    $command = ('"{0}" --config "{1}" --server-executable "{2}" --client-id claude' -f $HookExe, $Config, $Mcp)
+    $handler = [ordered]@{ type = "command"; command = $command; timeout = 25 }
+    $groups = @($document.hooks.SessionStart)
+    $preserved = @($groups | Where-Object {
+        $owned = @($_.hooks | Where-Object {
+            [string]$_.type -eq "command" -and
+            ([string]$_.command) -match 'soul-codex-session-start\.exe' -and
+            ([string]$_.command) -match '--client-id claude'
+        })
+        $owned.Count -eq 0
+    })
+    $sessionStart = @($preserved) + @([ordered]@{
+        matcher = "^(startup|resume|clear|compact|fork)$"
+        hooks = @($handler)
+    })
+    $document.hooks | Add-Member -NotePropertyName SessionStart -NotePropertyValue $sessionStart -Force
+    $temporary = "$settingsPath.soul-$PID.tmp"
+    $json = $document | ConvertTo-Json -Depth 64
+    [IO.File]::WriteAllText($temporary, $json, (New-Object Text.UTF8Encoding($false)))
+    $wrote = $false
+    try {
+        if ((Get-OptionalFileHash $settingsPath) -ne $beforeHash) {
+            throw "HOLD: Claude cambio settings.json concurrentemente; preservo esos bytes"
+        }
+        Move-SoulAtomicFile $temporary $settingsPath "claude-hooks"
+        $wrote = $true
+        $postHash = Get-OptionalFileHash $settingsPath
+        $live = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        $ownedLive = @($live.hooks.SessionStart | ForEach-Object { $_.hooks } | Where-Object {
+            [string]$_.type -eq "command" -and [string]$_.command -eq $command
+        })
+        if ($ownedLive.Count -ne 1) {
+            throw "Claude SessionStart hook no quedo cableado exactamente una vez"
+        }
+    } catch {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) }
+        if ($wrote) {
+            $postHash = Get-OptionalFileHash $settingsPath
+            Restore-ClientConfigCas $settingsPath $backup $beforeHash $postHash "Claude hooks"
+        }
+        throw
+    }
+    return $settingsPath
 }
 
 function Test-ClaudeSoulMcpShape([string]$Claude, [string]$Mcp, [string]$Config) {
@@ -858,7 +929,7 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.5.9', sys.argv[1], sys.argv[2]),
+    ('soul-platform', '0.5.10', sys.argv[1], sys.argv[2]),
     ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
@@ -991,7 +1062,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.5.9 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.5.10 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -1032,8 +1103,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.5.9") {
-    throw "Se requiere soul-platform 0.5.9 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.5.10") {
+    throw "Se requiere soul-platform 0.5.10 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"
@@ -1215,6 +1286,10 @@ if (-not $NoMachine -and -not $Check) {
             $codexHooks = Install-CodexSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig
             Good "Codex SessionStart cableado: SOUL se carga antes del primer mensaje"
             Write-Warning "Codex pedira confiar una sola vez en el hook local de $codexHooks; revisalo en /hooks. Despues arranca automatico."
+        }
+        if ($wiredClients -contains "claude") {
+            $claudeHooks = Install-ClaudeSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig
+            Good "Claude SessionStart cableado: SOUL se carga antes del primer mensaje"
         }
     }
 }

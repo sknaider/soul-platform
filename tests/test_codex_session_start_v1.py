@@ -67,6 +67,25 @@ def test_session_start_injects_context_and_writes_safe_receipt(tmp_path, monkeyp
     assert "IDENTITY: Valeria" not in json.dumps(receipt)
 
 
+def test_session_start_supports_claude_client_identity(tmp_path, monkeypatch):
+    config = tmp_path / "proxy.toml"
+    config.write_text("test")
+    calls = []
+    monkeypatch.setattr(
+        hook,
+        "_invoke_mcp",
+        lambda server, config, client_id, timeout: calls.append(client_id) or "CLAUDE SOUL",
+    )
+    output = io.StringIO()
+    assert hook.run_hook(
+        server=tmp_path / "soul-mcp-stdio.exe", config=config, client_id="claude",
+        stdin=_event(), stdout=output,
+    ) == 0
+    assert calls == ["claude"]
+    assert "CLAUDE SOUL" in output.getvalue()
+    assert (tmp_path / "session-start-claude.json").is_file()
+
+
 def test_session_start_fails_loud_without_triggering_model_search(tmp_path, monkeypatch):
     config = tmp_path / "proxy.toml"
     config.write_text("test")

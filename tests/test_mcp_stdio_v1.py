@@ -16,6 +16,7 @@ from soul_platform.mcp_stdio import (
     ensure_client_grants,
     sync_claude_app_grants,
     sync_claude_desktop_mcp_config,
+    sync_claude_session_start_hook,
     sync_codex_app_grants,
     verify_client_grant,
 )
@@ -322,6 +323,38 @@ def test_claude_desktop_config_rejects_invalid_shape_without_overwrite(tmp_path)
     assert desktop.read_bytes() == before
 
 
+def test_claude_session_start_hook_preserves_existing_and_is_idempotent(tmp_path):
+    config = tmp_path / "SOUL" / "proxy.toml"
+    server = tmp_path / "SOUL" / "soul-mcp-stdio.exe"
+    hook = tmp_path / "SOUL" / "soul-codex-session-start.exe"
+    settings = tmp_path / ".claude" / "settings.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("ok")
+    server.write_bytes(b"mcp")
+    hook.write_bytes(b"hook")
+    settings.parent.mkdir()
+    existing = {"matcher": "", "hooks": [{"type": "http", "url": "http://127.0.0.1/hook"}]}
+    settings.write_text(json.dumps({"hooks": {"SessionStart": [existing]}}))
+    assert sync_claude_session_start_hook(
+        config_path=config, server_executable=server, hook_executable=hook,
+        settings_path=settings,
+    )
+    payload = json.loads(settings.read_text())
+    groups = payload["hooks"]["SessionStart"]
+    assert groups[0] == existing
+    owned = [
+        handler for group in groups for handler in group["hooks"]
+        if handler.get("type") == "command" and "--client-id claude" in handler.get("command", "")
+    ]
+    assert len(owned) == 1
+    assert str(hook.resolve()) in owned[0]["command"]
+    assert groups[-1]["matcher"].endswith("|fork)$")
+    assert not sync_claude_session_start_hook(
+        config_path=config, server_executable=server, hook_executable=hook,
+        settings_path=settings,
+    )
+
+
 def test_compact_v2_parent_binding_is_normalized_during_rotation(tmp_path):
     result = initialize(
         root=tmp_path / "soul", upstream_kind="ollama",
@@ -375,6 +408,47 @@ def test_windows_distlib_chain_resolves_real_client_and_rejects_only_intermediat
     assert _select_windows_client_ancestor(chain, server, base_python) == chain[-1]
     with pytest.raises(ValueError, match="launcher chain"):
         _select_windows_client_ancestor(chain[:5], server, base_python)
+
+
+def test_windows_claude_hook_skips_exact_git_bash_but_not_lookalike(monkeypatch):
+    monkeypatch.setenv("ProgramFiles", r"C:\Users\Dadito\Downloads")
+    monkeypatch.setenv("ProgramFiles(x86)", r"C:\Users\Dadito\Downloads")
+    monkeypatch.setenv("SystemRoot", r"C:\Users\Dadito\Downloads\FakeWindows")
+    server = Path(r"C:\Users\Dadito\AppData\Local\SOUL\venv\Scripts\soul-mcp-stdio.exe")
+    base_python = Path(r"C:\Users\Dadito\AppData\Local\Programs\Python\Python313\python.exe")
+    claude = {
+        "path": r"C:\Users\Dadito\AppData\Roaming\Claude\claude-code\2.1.219\claude.exe",
+        "sid": "owner",
+    }
+    trusted_chain = [
+        {"path": str(base_python)},
+        {"path": r"C:\Users\Dadito\AppData\Local\SOUL\venv\Scripts\soul-codex-session-start.exe"},
+        {"path": str(server)},
+        {"path": r"C:\Program Files\Git\usr\bin\bash.exe"},
+        claude,
+    ]
+    assert _select_windows_client_ancestor(trusted_chain, server, base_python) == claude
+
+    lookalike = {"path": r"C:\Users\Dadito\Downloads\bash.exe", "sid": "owner"}
+    untrusted_chain = trusted_chain[:3] + [lookalike, claude]
+    assert _select_windows_client_ancestor(untrusted_chain, server, base_python) == lookalike
+
+    user_writable_git = {
+        "path": r"C:\Users\Dadito\AppData\Local\Programs\Git\usr\bin\bash.exe",
+        "sid": "owner",
+    }
+    user_writable_chain = trusted_chain[:3] + [user_writable_git, claude]
+    assert (
+        _select_windows_client_ancestor(user_writable_chain, server, base_python)
+        == user_writable_git
+    )
+
+    fake_cmd = {
+        "path": r"C:\Users\Dadito\Downloads\FakeWindows\System32\cmd.exe",
+        "sid": "owner",
+    }
+    fake_cmd_chain = trusted_chain[:3] + [fake_cmd, claude]
+    assert _select_windows_client_ancestor(fake_cmd_chain, server, base_python) == fake_cmd
 
 
 def test_explicit_rotation_updates_hashes_only_for_same_binding(tmp_path):
