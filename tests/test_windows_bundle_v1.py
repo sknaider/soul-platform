@@ -209,3 +209,10 @@ def test_unix_bundle_is_deterministic_and_contains_verified_installer(tmp_path):
         checksum = archive.extractfile(f"bundle/{wheel.name}.sha256")
         assert checksum is not None
         assert checksum.read().decode().startswith(hashlib.sha256(b"wheel-bytes").hexdigest())
+
+
+def test_unix_bundle_rejects_misleading_zip_extension(tmp_path):
+    root, wheel, core_wheel, _wheelhouse = _fake_root(tmp_path)
+    (root / "installer" / "soul-install.sh").write_text("#!/bin/sh\necho SOUL\n")
+    with pytest.raises(ValueError, match="must use .tar.gz or .tgz"):
+        MODULE.build_unix_bundle(root, wheel, core_wheel, tmp_path / "Unix.zip")

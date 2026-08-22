@@ -193,6 +193,8 @@ def build_unix_bundle(
     wheel = wheel.resolve()
     core_wheel = core_wheel.resolve()
     output = output.resolve()
+    if not (output.name.endswith(".tar.gz") or output.name.endswith(".tgz")):
+        raise ValueError("Unix bundle output must use .tar.gz or .tgz")
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]

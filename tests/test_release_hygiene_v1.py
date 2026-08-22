@@ -33,6 +33,7 @@ def test_build_excludes_all_local_distribution_directories():
     excluded = config["tool"]["hatch"]["build"]["exclude"]
     assert "/dist" in excluded
     assert "/dist-*" in excluded
+    assert "/wheelhouse-*" in excluded
     assert "/uv.lock" in excluded
 
 

@@ -52,6 +52,7 @@ exclude = [
     "/.pytest_cache",
     "/dist",
     "/dist-*",
+    "/wheelhouse-*",
     "/uv.lock",
     "/backend",
     "/runtime",
