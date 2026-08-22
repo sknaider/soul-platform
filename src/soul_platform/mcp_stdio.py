@@ -715,6 +715,75 @@ def sync_claude_app_grants(
     return added
 
 
+def sync_claude_desktop_mcp_config(
+    *,
+    config_path: Path,
+    server_executable: Path,
+    desktop_config_path: Path | None = None,
+    installed_parents: list[Path] | None = None,
+) -> bool:
+    """Ensure Claude Desktop exposes ``soul-local`` without losing other servers.
+
+    The Claude CLI user config and Claude Desktop config are distinct surfaces.
+    This uses exact executable/config paths, preserves all unrelated JSON, and
+    fails closed if another process changes the file during the update.
+    """
+
+    if desktop_config_path is None:
+        if os.name != "nt":
+            return False
+        parents = (
+            discover_windows_claude_app_parents()
+            if installed_parents is None else installed_parents
+        )
+        if not parents:
+            return False
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            raise ValueError("APPDATA is required for Claude Desktop")
+        desktop_config_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
+    target = desktop_config_path.expanduser()
+    desired = {
+        "command": str(server_executable.resolve(strict=True)),
+        "args": ["--config", str(config_path.resolve(strict=True)), "--client-id", "claude"],
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _GRANT_THREAD_LOCK:
+        before = target.read_bytes() if target.exists() else None
+        try:
+            document = json.loads(before.decode("utf-8-sig")) if before is not None else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Claude Desktop config is not valid JSON") from exc
+        if not isinstance(document, dict):
+            raise ValueError("Claude Desktop config root must be an object")
+        servers = document.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("Claude Desktop mcpServers must be an object")
+        if servers.get("soul-local") == desired:
+            return False
+        servers["soul-local"] = desired
+        payload = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        fd, raw_temporary = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+        )
+        temporary = Path(raw_temporary)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            current = target.read_bytes() if target.exists() else None
+            if current != before:
+                raise ValueError("Claude Desktop config changed concurrently")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        verified = json.loads(target.read_text(encoding="utf-8"))
+        if verified.get("mcpServers", {}).get("soul-local") != desired:
+            raise ValueError("Claude Desktop config post-write verification failed")
+        return True
+
+
 def _soul_config(settings: ProxySettings) -> SoulConfig:
     return SoulConfig(
         backend="sqlite",
@@ -844,7 +913,7 @@ class MCPStdioServer:
             result = {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "soul-local", "version": "0.5.8"},
+                "serverInfo": {"name": "soul-local", "version": "0.5.9"},
                 "instructions": (
                     "SOUL is the local persistent identity and memory layer. Call "
                     "soul_boot_context once, search memory when prior context matters, "

@@ -15,6 +15,7 @@ from soul_platform.mcp_stdio import (
     enroll_client,
     ensure_client_grants,
     sync_claude_app_grants,
+    sync_claude_desktop_mcp_config,
     sync_codex_app_grants,
     verify_client_grant,
 )
@@ -275,6 +276,50 @@ def test_claude_cli_desktop_and_runtime_have_exact_parent_bindings(tmp_path):
                 owner=owner,
             ),
         )
+
+
+def test_claude_desktop_config_preserves_other_servers_and_is_idempotent(tmp_path):
+    config = tmp_path / "SOUL" / "proxy.toml"
+    server = tmp_path / "SOUL" / "soul-mcp-stdio.exe"
+    desktop = tmp_path / "Claude" / "claude_desktop_config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("machine_soul_id = 'test'\n")
+    server.write_bytes(b"mcp")
+    desktop.parent.mkdir()
+    desktop.write_text(json.dumps({"mcpServers": {"github": {"command": "github-mcp"}}}))
+    assert sync_claude_desktop_mcp_config(
+        config_path=config,
+        server_executable=server,
+        desktop_config_path=desktop,
+    )
+    payload = json.loads(desktop.read_text())
+    assert payload["mcpServers"]["github"] == {"command": "github-mcp"}
+    assert payload["mcpServers"]["soul-local"] == {
+        "command": str(server.resolve()),
+        "args": ["--config", str(config.resolve()), "--client-id", "claude"],
+    }
+    assert not sync_claude_desktop_mcp_config(
+        config_path=config,
+        server_executable=server,
+        desktop_config_path=desktop,
+    )
+
+
+def test_claude_desktop_config_rejects_invalid_shape_without_overwrite(tmp_path):
+    config = tmp_path / "proxy.toml"
+    server = tmp_path / "soul-mcp-stdio.exe"
+    desktop = tmp_path / "claude_desktop_config.json"
+    config.write_text("ok")
+    server.write_bytes(b"mcp")
+    desktop.write_text('{"mcpServers": []}')
+    before = desktop.read_bytes()
+    with pytest.raises(ValueError, match="mcpServers"):
+        sync_claude_desktop_mcp_config(
+            config_path=config,
+            server_executable=server,
+            desktop_config_path=desktop,
+        )
+    assert desktop.read_bytes() == before
 
 
 def test_compact_v2_parent_binding_is_normalized_during_rotation(tmp_path):

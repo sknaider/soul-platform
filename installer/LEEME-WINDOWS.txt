@@ -1,4 +1,4 @@
-SOUL PLATFORM 0.5.8 — INSTALACION EN WINDOWS
+SOUL PLATFORM 0.5.9 — INSTALACION EN WINDOWS
 ==============================================
 
 Requisitos:
