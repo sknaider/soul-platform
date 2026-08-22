@@ -14,7 +14,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.5.7"' in text
+    assert 'PLATFORM_VERSION="0.5.8"' in text
     assert 'CORE_VERSION="0.4.3"' in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
@@ -82,7 +82,7 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "Scripts\\soul-tray-cli.exe" in text
     assert 'Invoke-Checked $trayCli @("--headless-check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.5.7"' in text
+    assert '[version]"0.5.8"' in text
     assert "soul-framework 0.4.3 exacto" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
@@ -137,7 +137,10 @@ def test_windows_installer_second_run_is_atomic_and_client_compatible():
     assert "function Test-SoulMcpMissingText" in text
     assert "No MCP server (?:found|named)" in text
     assert "function Enroll-SoulParentBinding" in text
-    assert text.count("Enroll-SoulParentBinding $Mcp $Config") == 3
+    assert "function Resolve-ClaudeAppParentBinaries" in text
+    assert 'Get-AppxPackage -Name "Claude"' in text
+    assert '"Claude\\claude-code"' in text
+    assert text.count("Enroll-SoulParentBinding $Mcp $Config") == 4
     assert 'Invoke-Checked $trayCli @("--check")' not in text
     assert 'Invoke-Checked $trayCli @("--headless-check")' in text
 
@@ -232,7 +235,7 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.5.7" in text
+    assert "SOUL PLATFORM 0.5.8" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text

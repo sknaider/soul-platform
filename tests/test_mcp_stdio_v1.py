@@ -14,8 +14,9 @@ from soul_platform.mcp_stdio import (
     _select_windows_client_ancestor,
     enroll_client,
     ensure_client_grants,
-    verify_client_grant,
+    sync_claude_app_grants,
     sync_codex_app_grants,
+    verify_client_grant,
 )
 from soul_platform.proxy import ProxySettings
 
@@ -219,6 +220,61 @@ def test_codex_cli_and_app_have_distinct_exact_parent_bindings(tmp_path):
     rotated = json.loads((result.root / "client-grants.json").read_text())["clients"]["codex"]
     assert len(rotated["parent_bindings"]) == 3
     assert rotated["server_sha256"] == hashlib.sha256(b"mcp-v2").hexdigest()
+
+
+def test_claude_cli_desktop_and_runtime_have_exact_parent_bindings(tmp_path):
+    result = initialize(
+        root=tmp_path / "soul", upstream_kind="ollama",
+        upstream_base_url="http://127.0.0.1:11434/v1", upstream_model="brain",
+        enable_autostart=False,
+    )
+    settings = ProxySettings.from_toml(result.config)
+    cli = tmp_path / "npm" / "claude.exe"
+    desktop = tmp_path / "WindowsApps" / "Claude.exe"
+    runtime = tmp_path / "Roaming" / "Claude" / "claude-code" / "2.1.219" / "claude.exe"
+    server = tmp_path / "soul-mcp-stdio.exe"
+    for path, content in (
+        (cli, b"claude-cli"), (desktop, b"claude-desktop"),
+        (runtime, b"claude-runtime"), (server, b"mcp-v1"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    enroll_client(
+        settings, "claude", parent_executable=cli,
+        server_executable=server, config_path=result.config,
+    )
+    assert sync_claude_app_grants(
+        settings, config_path=result.config, server_executable=server,
+        parents=[desktop, runtime],
+    ) == 2
+    assert sync_claude_app_grants(
+        settings, config_path=result.config, server_executable=server,
+        parents=[desktop, runtime],
+    ) == 0
+    entry = json.loads((result.root / "client-grants.json").read_text())["clients"]["claude"]
+    assert len(entry["parent_bindings"]) == 3
+    owner = f"uid:{__import__('os').getuid()}"
+    for parent in (cli, desktop, runtime):
+        verify_client_grant(
+            settings, "claude", config_path=result.config,
+            server_executable=server,
+            process_identity=ProcessIdentity(
+                executable=str(parent.resolve()),
+                executable_sha256=hashlib.sha256(parent.read_bytes()).hexdigest(),
+                owner=owner,
+            ),
+        )
+    runtime.write_bytes(b"tampered-runtime")
+    with pytest.raises(ValueError, match="parent hash"):
+        verify_client_grant(
+            settings, "claude", config_path=result.config,
+            server_executable=server,
+            process_identity=ProcessIdentity(
+                executable=str(runtime.resolve()),
+                executable_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                owner=owner,
+            ),
+        )
 
 
 def test_compact_v2_parent_binding_is_normalized_during_rotation(tmp_path):
