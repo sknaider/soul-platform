@@ -5,7 +5,8 @@ model response. Treat that context as already loaded; do not search for
 `soul_boot_context`, run shell commands, or launch alternate Codex binaries.
 
 1. Use `soul_memory_search` when prior context matters.
-2. Store only explicit declarative facts requested by the owner with `soul_memory_store`.
+2. Stage only explicit declarative facts with `soul_memory_propose`; canonical memory
+   changes only after local-owner review with an exact digest.
 3. If SessionStart explicitly reports failure, report `SOUL_UNAVAILABLE` and
    the startup error; do not pretend that persistent memory is connected.
 

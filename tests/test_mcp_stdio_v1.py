@@ -30,7 +30,9 @@ async def test_mcp_handshake_lists_scoped_tools_and_calls_runner():
         calls.append((name, arguments))
         return {"content": [{"type": "text", "text": "ok"}]}
 
-    server = MCPStdioServer(runner)
+    server = MCPStdioServer(
+        runner, scopes={"boot.public", "memory.search.private", "memory.propose"}
+    )
     initialized = await server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     )
@@ -43,8 +45,8 @@ async def test_mcp_handshake_lists_scoped_tools_and_calls_runner():
     )
     assert initialized["result"]["serverInfo"]["name"] == "soul-local"
     tools = {item["name"]: item for item in listing["result"]["tools"]}
-    assert set(tools) == {"soul_boot_context", "soul_memory_search", "soul_memory_store"}
-    assert tools["soul_memory_store"]["annotations"]["readOnlyHint"] is False
+    assert set(tools) == {"soul_boot_context", "soul_memory_search", "soul_memory_propose"}
+    assert tools["soul_memory_propose"]["annotations"]["readOnlyHint"] is False
     assert called["result"]["content"][0]["text"] == "ok"
     assert calls == [("soul_memory_search", {"query": "Valeria"})]
 
@@ -53,7 +55,7 @@ async def test_mcp_rejects_unknown_method_and_invalid_request():
     async def runner(_name, _arguments):
         raise AssertionError("runner should not be called")
 
-    server = MCPStdioServer(runner)
+    server = MCPStdioServer(runner, scopes=set())
     missing = await server.handle({"jsonrpc": "2.0", "id": 9, "method": "unknown"})
     assert missing["error"]["code"] == -32601
     with pytest.raises(ValueError, match="JSON-RPC"):
@@ -64,7 +66,7 @@ async def test_mcp_tools_require_fresh_initialize_session():
     async def runner(_name, _arguments):
         return {}
 
-    server = MCPStdioServer(runner)
+    server = MCPStdioServer(runner, scopes={"boot.public"})
     with pytest.raises(ValueError, match="session"):
         await server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     initialized = await server.handle(
@@ -72,7 +74,59 @@ async def test_mcp_tools_require_fresh_initialize_session():
     )
     assert initialized["result"]["_meta"]["soulAttachSession"]
     listing = await server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
-    assert listing["result"]["tools"]
+    assert [tool["name"] for tool in listing["result"]["tools"]] == ["soul_boot_context"]
+
+
+async def test_mcp_revalidates_private_scope_after_async_tool_interleaving():
+    live_scopes = {"memory.search.private"}
+
+    async def runner(_name, _arguments):
+        # Models the exact consent-snapshot race: authorization succeeded, a
+        # private write invalidated it, then the runner produced new bytes.
+        live_scopes.clear()
+        return {"content": [{"type": "text", "text": "CANARIO NUEVO"}]}
+
+    server = MCPStdioServer(
+        runner,
+        scopes=set(),
+        scope_resolver=lambda: frozenset(live_scopes),
+    )
+    await server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    with pytest.raises(PermissionError, match="changed during call"):
+        await server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "soul_memory_search",
+                    "arguments": {"query": "canario"},
+                },
+            }
+        )
+
+
+async def test_boot_only_scope_hides_and_denies_memory_tools():
+    calls = []
+
+    async def runner(name, arguments):
+        calls.append((name, arguments))
+        return {}
+
+    server = MCPStdioServer(runner, scopes={"boot.public"})
+    await server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    listing = await server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert [tool["name"] for tool in listing["result"]["tools"]] == ["soul_boot_context"]
+    with pytest.raises(PermissionError, match="scope denied"):
+        await server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "soul_memory_search", "arguments": {"query": "x"}},
+            }
+        )
+    assert calls == []
 
 
 def test_client_grant_is_machine_bound_and_fail_closed(tmp_path):
@@ -203,7 +257,8 @@ def test_codex_cli_and_app_have_distinct_exact_parent_bindings(tmp_path):
             ),
         )
     impostor = tmp_path / "impostor" / "codex.exe"
-    impostor.parent.mkdir(); impostor.write_bytes(app.read_bytes())
+    impostor.parent.mkdir()
+    impostor.write_bytes(app.read_bytes())
     with pytest.raises(ValueError, match="parent executable"):
         verify_client_grant(
             settings, "codex", config_path=result.config,
@@ -489,6 +544,63 @@ def test_explicit_rotation_updates_hashes_only_for_same_binding(tmp_path):
             server_executable=server, config_path=result.config,
             rotate_existing=True,
         )
+
+
+@pytest.mark.parametrize(
+    "old_scopes",
+    [
+        ["boot", "memory.search", "memory.store"],
+        ["boot.public", "boot.private", "memory.search.private", "memory.propose"],
+    ],
+)
+def test_owner_controlled_reinstall_upgrades_exact_prior_scope_sets(tmp_path, old_scopes):
+    result = initialize(
+        root=tmp_path / "soul",
+        upstream_kind="ollama",
+        upstream_base_url="http://127.0.0.1:11434/v1",
+        upstream_model="brain",
+        enable_autostart=False,
+    )
+    settings = ProxySettings.from_toml(result.config)
+    parent = tmp_path / "claude.exe"
+    server = tmp_path / "soul-mcp-stdio.exe"
+    parent.write_bytes(b"claude")
+    server.write_bytes(b"mcp")
+    enroll_client(
+        settings,
+        "claude",
+        parent_executable=parent,
+        server_executable=server,
+        config_path=result.config,
+    )
+    grants = result.root / "client-grants.json"
+    payload = json.loads(grants.read_text())
+    payload["clients"]["claude"]["scopes"] = old_scopes
+    before = (json.dumps(payload) + "\n").encode()
+    grants.write_bytes(before)
+
+    rotated = enroll_client(
+        settings,
+        "claude",
+        parent_executable=parent,
+        server_executable=server,
+        config_path=result.config,
+        rotate_existing=True,
+    )
+    assert rotated["scopes"] == [
+        "boot.public",
+        "boot.private",
+        "memory.search.private",
+        "memory.propose",
+        "profile.propose",
+    ]
+    live = json.loads(grants.read_text())["clients"]["claude"]
+    assert live["scopes"] == rotated["scopes"]
+    assert "memory.store" not in live["scopes"]
+    assert live["previous_scopes"] == old_scopes
+    backups = list(grants.parent.glob("client-grants.json.scopes.*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
 
 
 def test_explicit_enrollment_migrates_legacy_grants_with_exact_backup(tmp_path):

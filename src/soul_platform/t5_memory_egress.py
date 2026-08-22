@@ -519,7 +519,8 @@ class SQLiteT5EgressStore:
                 expected = (tenant_id, owner, "private", "legacy-migration")
                 if row is not None:
                     existing = tuple(str(row[key]) for key in ("tenant", "owner_subject", "scope", "origin"))
-                    if existing != expected:
+                    authenticated = (tenant_id, owner, "private", "authenticated-write")
+                    if existing not in {expected, authenticated}:
                         raise T5ProvenanceConflict(
                             f"legacy provenance conflict for memory {memory_id}"
                         )

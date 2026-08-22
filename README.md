@@ -15,7 +15,7 @@ cd bundle
 ./soul-install.sh --model gemma3:1b-it-qat
 ```
 
-The supported public install is a release bundle containing Platform 0.5.10,
+The supported public install is a release bundle containing Platform 0.6.0,
 Core 0.4.3 and SHA-256 files. `soul-install.sh` auto-discovers and verifies
 those wheels when they sit beside the script. The package is not currently
 published on PyPI, so a bare `pip install soul-platform` is intentionally not
@@ -23,7 +23,23 @@ documented as a working path.
 The release builder emits deterministic Windows ZIP and Linux/macOS `tar.gz`
 archives; the latter extracts to the documented `bundle/` directory.
 
-## AutoWire 0.5
+Platform 0.6.0 adds Living SOUL: an additive initial profile, a public/private
+boot split, effective per-tool MCP scopes, processor-bound cloud-context
+consent, per-prompt recall hooks, and candidate-first memory writes. Model
+clients cannot write canonical memory or mutate identity. A direct
+`Recuerda que ...` command is staged for owner review; it becomes recallable
+only after:
+
+```text
+soul-machine memory-candidates list
+soul-machine memory-candidates approve --candidate-id ID --digest SHA256
+```
+
+Cloud recall is opt-in and byte-bound to the exact processor. On Windows pass
+`-ConsentCloudMemory` to the installer, or grant/revoke it explicitly with
+`soul-machine context-consent grant|revoke --client codex|claude`.
+
+## AutoWire 0.6
 
 On Windows the installer leaves SOUL hot-ready: it inventories fixed local
 model surfaces without changing the active brain and registers a
@@ -126,12 +142,15 @@ and after the switch. On Windows the default config lives under
 The client must send the generated token as `Authorization: Bearer <token>`.
 Recall is read-only by default. `X-Soul-Remember: true` persists the raw user
 prompt plus a response digest in a separate hash-linked conversation ledger;
-it never promotes the question or prompt into semantic memory. A trusted client promotes a reviewed
-declarative fact explicitly with
+it never promotes the question or prompt into semantic memory. A trusted client stages a declarative
+fact for local-owner review with
 `"soul_memory":{"content":"...","importance":1..10}`. Questions are
-rejected as facts. The response reports `X-Soul-Store` as `ledger`,
-`fact-stored`, `ledger+fact`, `ledger-failed+fact-stored`,
-`ledger+fact-failed`, `disabled` or `failed` without exposing content.
+rejected as facts, and the proxy never writes the candidate directly into canonical memory.
+The response reports `X-Soul-Store` as `ledger`,
+`fact-pending-review`, `ledger+fact-pending-review`,
+`ledger-failed+fact-pending-review`, `ledger+candidate-failed`, `disabled` or
+`failed` without exposing content. Promotion requires the owner CLI to review
+and retype the exact candidate digest in an interactive terminal.
 The ledger and agency audit each keep a private, atomic head sidecar, so editing,
 reordering or deleting a valid suffix from the SQLite file fails closed on
 reopen. Because the sidecar shares the user's OS account, high-assurance
@@ -139,9 +158,22 @@ deployments still checkpoint that head in an operator-owned external witness.
 The v1 proxy accepts OpenAI-compatible SSE when `stream=true`, preserves SOUL
 evidence headers and enforces the response-size ceiling before returning the
 bounded event stream. It does not yet provide token-by-token low-latency
-forwarding. Remote upstreams are disabled in proxy v1. The one
-supported credential name is `SOUL_PROXY_UPSTREAM_API_KEY`; its value is read
-from the environment and never stored in the TOML file.
+forwarding. Remote upstreams are disabled in proxy v1. The one supported
+credential name is `SOUL_PROXY_UPSTREAM_API_KEY`; its value is read from the
+environment and never stored in the TOML file.
+
+### Trust boundary (important)
+
+Platform 0.6.0 is a cooperative single-user integration. MCP scopes,
+snapshot-bound consent, T5 and candidate review constrain clients that use the
+SOUL interfaces; they do **not** sandbox a coding agent that already has shell
+or filesystem authority under the same OS account. Such a process can read the
+owner's other files too, and the local SQLite soul is not a separate security
+principal. Use cloud recall only with a trusted client and an exact consent
+snapshot. A deployment that treats the model-facing process as hostile must
+run the SOUL broker/database under a dedicated OS identity (or an equivalent
+sandbox) and keep owner approval behind independent user-presence hardware/UI;
+that hardened custody mode is not provided by this user-space release.
 
 To remove only the autostart descriptor while preserving the soul:
 

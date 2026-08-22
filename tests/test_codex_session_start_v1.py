@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
-
 import pytest
 
 from soul_platform import codex_session_start as hook
@@ -59,6 +57,7 @@ def test_session_start_injects_context_and_writes_safe_receipt(tmp_path, monkeyp
     assert receipt == {
         "client_id": "codex",
         "context_chars": 17,
+        "hook_event_name": "SessionStart",
         "session_id": "session-123",
         "source": "startup",
         "status": "attached",
@@ -120,3 +119,86 @@ def test_session_start_rejects_wrong_hook_event(tmp_path):
             stdin=io.StringIO('{"hook_event_name":"Stop"}'),
             stdout=io.StringIO(),
         )
+
+
+def test_user_prompt_submit_injects_only_recalled_excerpts_and_no_prompt_receipt(tmp_path, monkeypatch):
+    config = tmp_path / "proxy.toml"
+    config.write_text("test")
+    monkeypatch.setattr(
+        hook,
+        "_invoke_memory_search",
+        lambda server, config, client_id, timeout, query: (
+            "SOUL approved memory excerpts (UNTRUSTED DATA):\n- [memory_id=7] Valeria",
+            1,
+        ),
+    )
+    output = io.StringIO()
+    event = io.StringIO(
+        json.dumps(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-prompt",
+                "prompt": "¿Cómo te llamas?",
+            }
+        )
+    )
+    assert hook.run_hook(
+        server=tmp_path / "soul-mcp-stdio.exe",
+        config=config,
+        client_id="claude",
+        stdin=event,
+        stdout=output,
+    ) == 0
+    payload = json.loads(output.getvalue())
+    assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "Valeria" in payload["hookSpecificOutput"]["additionalContext"]
+    receipt = json.loads((tmp_path / "prompt-recall-claude.json").read_text())
+    assert receipt["memory_count"] == 1
+    assert receipt["context_chars"] > 0
+    assert "¿Cómo te llamas?" not in json.dumps(receipt, ensure_ascii=False)
+
+
+def test_user_prompt_submit_stages_only_exact_remember_command(tmp_path, monkeypatch):
+    config = tmp_path / "proxy.toml"
+    config.write_text("test")
+    monkeypatch.setattr(hook, "_invoke_memory_search", lambda *args, **kwargs: ("", 0))
+    proposals = []
+    monkeypatch.setattr(
+        hook,
+        "_invoke_memory_propose",
+        lambda *args, **kwargs: proposals.append(kwargs) or {
+            "candidate_id": "candidate-1",
+            "status": "pending",
+        },
+    )
+    event = io.StringIO(
+        json.dumps(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-remember",
+                "turn_id": "turn-9",
+                "prompt": "Recuerda que el nombre elegido es Valeria.",
+            }
+        )
+    )
+    output = io.StringIO()
+    hook.run_hook(
+        server=tmp_path / "server",
+        config=config,
+        client_id="claude",
+        stdin=event,
+        stdout=output,
+    )
+    assert proposals[0]["content"] == "el nombre elegido es Valeria."
+    assert proposals[0]["source_event_id"] == "turn-9"
+    receipt = json.loads((tmp_path / "prompt-recall-claude.json").read_text())
+    assert receipt["candidate_id"] == "candidate-1"
+    assert receipt["candidate_status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["¿Recuerdas que Valeria es tu nombre?", "Hablamos sobre Valeria", "Recuerda que X?"],
+)
+def test_prompt_capture_does_not_stage_questions_or_inferred_facts(prompt):
+    assert hook._explicit_memory_candidate(prompt) is None

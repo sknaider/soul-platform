@@ -166,6 +166,18 @@ async def test_cross_owner_lock_survives_restart_and_is_session_scoped(tmp_path)
 
 async def test_legacy_migration_is_non_destructive_idempotent_and_atomic(tmp_path):
     store = await _store(tmp_path)
+    await store.bind_memory(
+        soul_id="soul",
+        memory_id="owner-approved",
+        tenant="local",
+        owner_subject="owner",
+    )
+    assert await store.bind_legacy_memories(
+        soul_id="soul",
+        memory_ids=["owner-approved"],
+        tenant="local",
+        owner_subject="owner",
+    ) == 0
     assert await store.bind_legacy_memories(
         soul_id="soul", memory_ids=[1, 2], tenant="local", owner_subject="owner"
     ) == 2

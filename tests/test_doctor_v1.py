@@ -47,6 +47,10 @@ def _exact_versions(
 
 def _database(path: Path, dimensions: int = 1024) -> None:
     embedding = struct.pack(f"<{dimensions}f", *([0.25] * dimensions))
+    # The product initializer now creates a live Core profile immediately.
+    # Doctor's fixture intentionally uses a minimal synthetic schema, so reset
+    # only this temporary test database before constructing that fixture.
+    path.unlink(missing_ok=True)
     connection = sqlite3.connect(path)
     try:
         connection.executescript(

@@ -14,7 +14,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.5.10"' in text
+    assert 'PLATFORM_VERSION="0.6.0"' in text
     assert 'CORE_VERSION="0.4.3"' in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
@@ -41,6 +41,13 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert 'ProxyHandler({})' in text
     assert 'perfil embedding no soportado' in text
     assert 'config MachineSoul verificada: BGE-M3/1024/auto' in text
+    assert 'AUTOWIRE="$VENV/bin/soul-autowire"' in text
+    assert '"$AUTOWIRE" --root "$SOUL_ROOT" reconcile' in text
+    assert '"$AUTOWIRE" --root "$SOUL_ROOT" install-autostart' in text
+    assert '"$AUTOWIRE" --root "$SOUL_ROOT" status' in text
+    assert "Runtime trust" in text and "fail-closed" in text
+    assert '[ -t 0 ] && [ -t 1 ]' in text
+    assert 'context-consent grant --client codex --config "$SOUL_CONFIG" >/dev/null' not in text
     activated = text.index('CUTOVER_ACTIVATED=1')
     failed_init = text.index('if ! "$VENV/bin/soul-machine" init', activated)
     rollback = text.index('embedding-cutover" rollback', failed_init)
@@ -82,7 +89,7 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "Scripts\\soul-tray-cli.exe" in text
     assert 'Invoke-Checked $trayCli @("--headless-check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.5.10"' in text
+    assert '[version]"0.6.0"' in text
     assert "soul-framework 0.4.3 exacto" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
@@ -141,6 +148,13 @@ def test_windows_installer_second_run_is_atomic_and_client_compatible():
     assert "function Sync-ClaudeDesktopMcpConfig" in text
     assert "function Install-ClaudeSessionStartHook" in text
     assert "Install-ClaudeSessionStartHook $soulCodexSessionStart $soulMcp $soulConfig" in text
+    assert "UserPromptSubmit" in text
+    assert "ConsentCloudMemory" in text
+    assert "function Invoke-OwnerInteractive" in text
+    assert "[Console]::IsInputRedirected" in text
+    assert 'Invoke-OwnerInteractive $machine @("context-consent", "grant"' in text
+    assert '@("ensure-profile", "--config", $soulConfig)' in text
+    assert '@("context-consent", "grant", "--client", "claude", "--config", $soulConfig)' in text
     assert '"claude_desktop_config.json"' in text
     assert "Sync-ClaudeDesktopMcpConfig $Mcp $Config" in text
     assert 'Get-AppxPackage -Name "Claude"' in text
@@ -240,7 +254,7 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.5.10" in text
+    assert "SOUL PLATFORM 0.6.0" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text

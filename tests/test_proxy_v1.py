@@ -376,7 +376,7 @@ async def test_conversation_ledger_head_detects_suffix_deletion(tmp_path):
             pass
 
 
-async def test_explicit_fact_is_promoted_but_question_is_never_a_fact(tmp_path):
+async def test_explicit_fact_is_quarantined_pending_owner_review(tmp_path):
     settings = _settings(tmp_path)
     auth = {"Authorization": f"Bearer {settings.read_token()}"}
     app = create_app(settings, upstream_transport=_transport([]))
@@ -390,11 +390,15 @@ async def test_explicit_fact_is_promoted_but_question_is_never_a_fact(tmp_path):
             "soul_memory": {"content": "El usuario se llama William.", "importance": 10},
         },
     )
-    assert stored.headers["X-Soul-Store"] == "ledger+fact"
-    async with Soul.create(settings.soul_name, config=_soul_config(settings)) as soul:
-        hits = await soul.memory.search("nombre del usuario", limit=10)
-    assert any(hit.memory.content == "El usuario se llama William." for hit in hits)
-    assert all("¿Cómo me llamo?" not in hit.memory.content for hit in hits)
+    assert stored.headers["X-Soul-Store"] == "ledger+fact-pending-review"
+    assert stored.headers["X-Soul-Candidate-Id"]
+    with sqlite3.connect(settings.soul_db) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    with sqlite3.connect(settings.soul_db.parent / "MachineSoul.governance.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT content,status FROM memory_candidates"
+        ).fetchone()
+    assert row == ("El usuario se llama William.", "pending")
 
 
 async def test_question_cannot_be_promoted_as_fact(tmp_path):
@@ -432,16 +436,18 @@ async def test_fact_success_reports_partial_ledger_failure_honestly(tmp_path, mo
         },
     )
     assert response.status_code == 200
-    assert response.headers["X-Soul-Store"] == "ledger-failed+fact-stored"
+    assert response.headers["X-Soul-Store"] == "ledger-failed+fact-pending-review"
 
 
-async def test_ledger_success_reports_partial_fact_failure_honestly(tmp_path, monkeypatch):
+async def test_ledger_success_reports_partial_candidate_failure_honestly(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
 
-    async def fail_store(*_args, **_kwargs):
+    def fail_candidate(*_args, **_kwargs):
         raise sqlite3.OperationalError("semantic store unavailable")
 
-    monkeypatch.setattr("soul_framework.memory.store.MemoryStore.store", fail_store)
+    monkeypatch.setattr(
+        "soul_platform.living_soul.propose_memory_candidate", fail_candidate
+    )
     response = await _request(
         create_app(settings, upstream_transport=_transport([])),
         "POST", "/v1/chat/completions",
@@ -455,7 +461,7 @@ async def test_ledger_success_reports_partial_fact_failure_honestly(tmp_path, mo
         },
     )
     assert response.status_code == 200
-    assert response.headers["X-Soul-Store"] == "ledger+fact-failed"
+    assert response.headers["X-Soul-Store"] == "ledger+candidate-failed"
     with sqlite3.connect(settings.conversation_ledger) as connection:
         assert connection.execute("SELECT COUNT(*) FROM conversation_events").fetchone()[0] == 1
 

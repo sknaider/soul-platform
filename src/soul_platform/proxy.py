@@ -949,30 +949,32 @@ def create_app(
                 store_status = "failed"
         if response.is_success and fact_content:
             try:
-                memory_id = await state["soul"].memory.store(
-                    fact_content, importance=fact_importance, scope="private"
-                )
-                await state["t5_egress"].bind_memory(
-                    soul_id=settings.machine_soul_id,
-                    memory_id=memory_id,
-                    tenant=principal.tenant,
-                    owner_subject=principal.actor,
-                    scope="private",
-                    origin=(
-                        "legacy-migration"
-                        if settings.t5_mode == "compatibility-single-owner"
-                        else "authenticated-write"
+                from soul_platform.living_soul import propose_memory_candidate
+
+                proposal = propose_memory_candidate(
+                    settings,
+                    client_id=f"proxy:{principal.actor}",
+                    source_event_id=(
+                        f"{principal.session_id}:"
+                        f"{hashlib.sha256(raw).hexdigest()}"
                     ),
+                    content=fact_content,
+                    importance=fact_importance,
+                    provenance={
+                        "session_id": principal.session_id,
+                        "surface": "openai-proxy",
+                    },
                 )
                 if store_status == "disabled":
-                    store_status = "fact-stored"
+                    store_status = "fact-pending-review"
                 elif store_status == "ledger":
-                    store_status = "ledger+fact"
+                    store_status = "ledger+fact-pending-review"
                 else:
-                    store_status = "ledger-failed+fact-stored"
+                    store_status = "ledger-failed+fact-pending-review"
+                headers["X-Soul-Candidate-Id"] = str(proposal["candidate_id"])
             except Exception:
                 store_status = (
-                    "ledger+fact-failed" if store_status == "ledger" else "failed"
+                    "ledger+candidate-failed" if store_status == "ledger" else "failed"
                 )
         headers["X-Soul-Store"] = store_status
         if wants_stream:

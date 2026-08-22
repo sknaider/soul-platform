@@ -5,7 +5,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import os
 import subprocess
 import tarfile
 import zipfile
@@ -111,6 +110,42 @@ def test_release_build_forces_epoch_and_is_identical_across_host_environments(
         }
     with tarfile.open(outputs[0] / "soul_platform-9.8.7.tar.gz") as sdist:
         assert {item.mtime for item in sdist.getmembers()} == {MODULE.RELEASE_EPOCH}
+
+
+def test_git_source_record_binds_clean_commit_and_rejects_dirty_tree(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@soul.local"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "SOUL Test"],
+        check=True,
+    )
+    (root / "source.txt").write_text("frozen\n")
+    subprocess.run(["git", "-C", str(root), "add", "source.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "freeze"], check=True)
+
+    record = MODULE._git_source_record(root, required=True)
+    assert record == {
+        "git_commit": subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+        "git_tree": subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+    }
+    (root / "source.txt").write_text("dirty\n")
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        MODULE._git_source_record(root, required=True)
 
 
 @pytest.mark.parametrize("unsafe", ["root", "core", "wheelhouse"])
