@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import zipfile
 from pathlib import Path
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -37,3 +40,29 @@ def test_adaptive_gate_rejects_unsafe_bootstrap_mutants():
         "api_secret": "\n" + "gsk_" + "abcdefghijklmnopqrstuvwxyz123456\n",
     }.items():
         assert name in MODULE.validate_installer(text + payload)
+
+
+def _write_bundle(tmp_path: Path, platform_version: str) -> Path:
+    bundle = tmp_path / f"SOUL-Platform-{platform_version}-Windows.zip"
+    installer = (ROOT / "installer" / "Install-Soul.ps1").read_bytes()
+    wheels = {
+        f"soul_platform-{platform_version}-py3-none-any.whl": b"platform-wheel",
+        "soul_framework-0.4.3-py3-none-any.whl": b"core-wheel",
+    }
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("Install-Soul.ps1", installer)
+        for name, payload in wheels.items():
+            archive.writestr(name, payload)
+            archive.writestr(
+                name + ".sha256", hashlib.sha256(payload).hexdigest() + "\n"
+            )
+    return bundle
+
+
+def test_adaptive_bundle_accepts_exact_release_and_rejects_previous_version(tmp_path):
+    current = _write_bundle(tmp_path, "0.6.1")
+    assert MODULE.verify(current)["status"] == "verified"
+
+    previous = _write_bundle(tmp_path, "0.6.0")
+    with pytest.raises(ValueError, match="exact Platform 0.6.1"):
+        MODULE.verify(previous)

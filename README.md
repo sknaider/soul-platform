@@ -15,7 +15,7 @@ cd bundle
 ./soul-install.sh --model gemma3:1b-it-qat
 ```
 
-The supported public install is a release bundle containing Platform 0.6.0,
+The supported public install is a release bundle containing Platform 0.6.1,
 Core 0.4.3 and SHA-256 files. `soul-install.sh` auto-discovers and verifies
 those wheels when they sit beside the script. The package is not currently
 published on PyPI, so a bare `pip install soul-platform` is intentionally not
@@ -23,7 +23,13 @@ documented as a working path.
 The release builder emits deterministic Windows ZIP and Linux/macOS `tar.gz`
 archives; the latter extracts to the documented `bundle/` directory.
 
-Platform 0.6.0 adds Living SOUL: an additive initial profile, a public/private
+The Windows bundle carries a hash-locked third-party wheelhouse. The Unix
+bundle binds the two first-party wheels exactly, but resolves third-party
+binary wheels online from isolated official PyPI; it is portable, not a fully
+offline or byte-locked third-party closure. This boundary is repeated inside
+the archive as `ONLINE-DEPENDENCIES.txt`.
+
+Platform 0.6.1 includes Living SOUL: an additive initial profile, a public/private
 boot split, effective per-tool MCP scopes, processor-bound cloud-context
 consent, per-prompt recall hooks, and candidate-first memory writes. Model
 clients cannot write canonical memory or mutate identity. A direct
@@ -164,7 +170,7 @@ environment and never stored in the TOML file.
 
 ### Trust boundary (important)
 
-Platform 0.6.0 is a cooperative single-user integration. MCP scopes,
+Platform 0.6.1 is a cooperative single-user integration. MCP scopes,
 snapshot-bound consent, T5 and candidate review constrain clients that use the
 SOUL interfaces; they do **not** sandbox a coding agent that already has shell
 or filesystem authority under the same OS account. Such a process can read the

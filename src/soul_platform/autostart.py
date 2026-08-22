@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import plistlib
+import shutil
 import socket
 import stat
 import subprocess
@@ -23,6 +24,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
 from soul_platform.proxy import (
     ProxySettings,
     _assert_no_symlink_components,
@@ -236,6 +238,21 @@ def _restore_descriptor(target: Path, snapshot: tuple[bytes, int]) -> None:
             os.unlink(temporary)
 
 
+def _require_linux_user_manager() -> None:
+    """Fail before writing a unit when no usable per-user systemd exists."""
+    if shutil.which("systemctl") is None:
+        raise RuntimeError(
+            "systemd user manager is unavailable; use --no-autostart for an "
+            "explicit on-demand runtime"
+        )
+    probe = _run(["systemctl", "--user", "show-environment"], check=False)
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "systemd user manager is not running; use --no-autostart for an "
+            "explicit on-demand runtime"
+        )
+
+
 def _remove_failed_fresh_descriptor(
     contract: AutostartContract,
     platform: PlatformName,
@@ -246,10 +263,28 @@ def _remove_failed_fresh_descriptor(
     resolved_home = (home or Path.home()).expanduser().resolve()
     target = descriptor_path(platform, resolved_home)
     if platform == "linux":
-        _run(["systemctl", "--user", "disable", "--now", target.name], check=False)
+        try:
+            stopped = _run(
+                ["systemctl", "--user", "stop", target.name],
+                check=False,
+            )
+        except OSError:
+            stopped = None
+        if stopped is None or stopped.returncode != 0:
+            _request_shutdown(contract)
         _wait_stopped(contract)
+        try:
+            _run(
+                ["systemctl", "--user", "disable", target.name],
+                check=False,
+            )
+        except OSError:
+            pass
         disable_descriptor(platform, home=resolved_home)
-        _run(["systemctl", "--user", "daemon-reload"])
+        try:
+            _run(["systemctl", "--user", "daemon-reload"], check=False)
+        except OSError:
+            pass
     elif platform == "macos":
         _run(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(target)],
@@ -282,6 +317,8 @@ def install_and_activate_descriptor(
     _assert_no_symlink_components(requested_home, "home")
     resolved_home = requested_home.resolve()
     target = descriptor_path(platform, resolved_home)
+    if platform == "linux":
+        _require_linux_user_manager()
     _safe_descriptor_parent(target, resolved_home)
     previous = _descriptor_snapshot(target)
     install_descriptor(contract, platform, home=resolved_home)

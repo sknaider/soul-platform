@@ -8,7 +8,6 @@ import re
 import zipfile
 from pathlib import Path
 
-
 REQUIRED = {
     "python_bootstrap": '"Python.Python.3.13"',
     "ollama_bootstrap": '"Ollama.Ollama"',
@@ -21,7 +20,7 @@ REQUIRED = {
     "dependency_repair": "Reparando solo dependencias ausentes o incompatibles",
     "embedding_model": 'pull", "bge-m3"',
     "bootstrap_brain": '"gemma3:1b"',
-    "receipt": 'install-receipt.json',
+    "receipt": "install-receipt.json",
     "mcp": "function Install-SoulClientMcp(",
     "session_start": "function Install-CodexSessionStartHook(",
     "identity_acl": "Set-SoulPrivateAcl $soulRoot",
@@ -64,10 +63,20 @@ def verify(bundle: Path) -> dict[str, object]:
     payload = bundle.read_bytes()
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = archive.namelist()
-        platform = [name for name in names if re.fullmatch(r"soul_platform-0\.6\.0-py3-none-any\.whl", name)]
-        core = [name for name in names if re.fullmatch(r"soul_framework-0\.4\.3-py3-none-any\.whl", name)]
+        platform = [
+            name
+            for name in names
+            if re.fullmatch(r"soul_platform-0\.6\.1-py3-none-any\.whl", name)
+        ]
+        core = [
+            name
+            for name in names
+            if re.fullmatch(r"soul_framework-0\.4\.3-py3-none-any\.whl", name)
+        ]
         if len(platform) != 1 or len(core) != 1:
-            raise ValueError("bundle must contain exact Platform 0.6.0 and Core 0.4.3 wheels")
+            raise ValueError(
+                "bundle must contain exact Platform 0.6.1 and Core 0.4.3 wheels"
+            )
         for name in (*platform, *core):
             expected = archive.read(name + ".sha256").decode("ascii").split()[0].lower()
             if sha256(archive.read(name)) != expected:
@@ -85,7 +94,9 @@ def verify(bundle: Path) -> dict[str, object]:
             if name in validate_installer(mutant):
                 killed.append(name)
         if sorted(killed) != sorted(REQUIRED):
-            raise ValueError("non-vacuous mutation control did not kill every required arm")
+            raise ValueError(
+                "non-vacuous mutation control did not kill every required arm"
+            )
     return {
         "schema": "soul.windows-adaptive-bundle.receipt.v1",
         "status": "verified",

@@ -157,8 +157,36 @@ def test_product_autostart_failure_restores_and_reactivates_prior_descriptor(
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     # The second native activation observes the restored bytes, not the failed
     # replacement.  Linux and macOS each execute three activation commands.
-    assert len(commands) == 6
-    assert all(payload == previous for _command, payload in commands[3:])
+    expected_commands = 7 if platform == "linux" else 6
+    restored_activation_offset = 4 if platform == "linux" else 3
+    assert len(commands) == expected_commands
+    assert all(
+        payload == previous
+        for _command, payload in commands[restored_activation_offset:]
+    )
+
+
+@pytest.mark.parametrize("manager_state", ["missing", "inactive"])
+def test_product_linux_autostart_preflights_manager_before_writing(
+    tmp_path, monkeypatch, manager_state
+):
+    contract = _contract(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    target = home / ".config" / "systemd" / "user" / "soul-platform-proxy.service"
+    if manager_state == "missing":
+        monkeypatch.setattr("soul_platform.autostart.shutil.which", lambda _name: None)
+    else:
+        monkeypatch.setattr(
+            "soul_platform.autostart.shutil.which", lambda _name: "/usr/bin/systemctl"
+        )
+        monkeypatch.setattr(
+            "soul_platform.autostart._run",
+            lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
+        )
+    with pytest.raises(RuntimeError, match="systemd user manager"):
+        install_and_activate_descriptor(contract, "linux", home=home)
+    assert not target.exists()
+    assert not target.parent.exists()
 
 
 @pytest.mark.parametrize("platform", ["linux", "macos"])
@@ -190,7 +218,8 @@ def test_product_autostart_failure_disables_and_removes_fresh_descriptor(
     assert not target.exists()
     flattened = [command for command, _kwargs in commands]
     if platform == "linux":
-        assert ["systemctl", "--user", "disable", "--now", target.name] in flattened
+        assert ["systemctl", "--user", "stop", target.name] in flattened
+        assert ["systemctl", "--user", "disable", target.name] in flattened
     else:
         assert [
             "launchctl",
@@ -198,6 +227,39 @@ def test_product_autostart_failure_disables_and_removes_fresh_descriptor(
             f"gui/{os.getuid()}",
             str(target),
         ] in flattened
+
+
+def test_partial_linux_activation_is_stopped_before_fresh_descriptor_removal(
+    tmp_path, monkeypatch
+):
+    contract = _contract(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    target = home / ".config" / "systemd" / "user" / "soul-platform-proxy.service"
+    state = {"active": False}
+    commands = []
+
+    monkeypatch.setattr(
+        "soul_platform.autostart.shutil.which", lambda _name: "/usr/bin/systemctl"
+    )
+
+    def partial_start(command, **_kwargs):
+        commands.append(command)
+        if command[:4] == ["systemctl", "--user", "enable", "--now"]:
+            state["active"] = True
+            raise subprocess.CalledProcessError(1, command)
+        if command[:3] == ["systemctl", "--user", "stop"]:
+            state["active"] = False
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr("soul_platform.autostart._run", partial_start)
+    monkeypatch.setattr("soul_platform.autostart._wait_stopped", lambda _contract: None)
+    with pytest.raises(subprocess.CalledProcessError):
+        install_and_activate_descriptor(contract, "linux", home=home)
+
+    assert state["active"] is False
+    assert ["systemctl", "--user", "stop", target.name] in commands
+    assert ["systemctl", "--user", "disable", target.name] in commands
+    assert not target.exists()
 
 
 @pytest.mark.parametrize("had_previous", [False, True])

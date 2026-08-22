@@ -4,6 +4,8 @@ import base64
 import json
 import os
 import plistlib
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,7 +19,6 @@ from soul_platform.autostart import (
     _previous_windows_task,
     _run,
 )
-
 
 WINDOWS_TASK_NAME = "SOUL AutoWire"
 
@@ -64,8 +65,13 @@ def _windows_register_script(
     arguments = _powershell_literal(
         subprocess.list2cmdline(
             [
-                "-m", "soul_platform.autowire.cli", "--root", str(root),
-                "watch", "--interval", f"{interval:g}",
+                "-m",
+                "soul_platform.autowire.cli",
+                "--root",
+                str(root),
+                "watch",
+                "--interval",
+                f"{interval:g}",
             ]
         )
     )
@@ -132,25 +138,94 @@ def install_autowire_autostart(
         target = receipt
     elif platform == "linux":
         target = home / ".config" / "systemd" / "user" / "soul-autowire.service"
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            raise RuntimeError(
+                "Linux AutoWire autostart requires a systemd user manager; "
+                "shadow reconcile remains available and no unit was written"
+            )
+        manager = _run([systemctl, "--user", "show-environment"], check=False)
+        if manager.returncode != 0:
+            raise RuntimeError(
+                "Linux AutoWire autostart requires a running systemd user manager; "
+                "shadow reconcile remains available and no unit was written"
+            )
         command = " ".join(
             '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
             for value in (
-                str(python), "-m", "soul_platform.autowire.cli", "--root", str(root),
-                "watch", "--interval", f"{interval:g}",
+                str(python),
+                "-m",
+                "soul_platform.autowire.cli",
+                "--root",
+                str(root),
+                "watch",
+                "--interval",
+                f"{interval:g}",
             )
         )
-        _atomic_private(
-            target,
-            (
-                "[Unit]\nDescription=SOUL AutoWire local discovery\nAfter=soul-platform-proxy.service\n\n"
-                "[Service]\nType=simple\n" + f"ExecStart={command}\nRestart=on-failure\nRestartSec=3\n"
-                "NoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\n"
-                f'ReadWritePaths="{root}"\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\n'
-                "[Install]\nWantedBy=default.target\n"
-            ).encode("utf-8"),
+        previous = target.read_bytes() if target.is_file() else None
+        previous_mode = (
+            stat.S_IMODE(target.stat().st_mode) if previous is not None else None
         )
-        _run(["systemctl", "--user", "daemon-reload"])
-        _run(["systemctl", "--user", "enable", "--now", target.name])
+        previous_enabled = (
+            _run(
+                [systemctl, "--user", "is-enabled", target.name], check=False
+            ).returncode
+            == 0
+            if previous is not None
+            else False
+        )
+        previous_active = (
+            _run(
+                [systemctl, "--user", "is-active", target.name], check=False
+            ).returncode
+            == 0
+            if previous is not None
+            else False
+        )
+        try:
+            _atomic_private(
+                target,
+                (
+                    "[Unit]\nDescription=SOUL AutoWire local discovery\nAfter=soul-platform-proxy.service\n\n"
+                    "[Service]\nType=simple\n"
+                    + f"ExecStart={command}\nRestart=on-failure\nRestartSec=3\n"
+                    "NoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\n"
+                    f'ReadWritePaths="{root}"\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\n'
+                    "[Install]\nWantedBy=default.target\n"
+                ).encode("utf-8"),
+            )
+            _run([systemctl, "--user", "daemon-reload"])
+            _run([systemctl, "--user", "enable", "--now", target.name])
+        except Exception as activation_error:
+            rollback_errors = []
+            for command in (
+                [systemctl, "--user", "stop", target.name],
+                [systemctl, "--user", "disable", target.name],
+            ):
+                try:
+                    _run(command, check=False)
+                except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                    rollback_errors.append(exc)
+            if previous is None:
+                target.unlink(missing_ok=True)
+            else:
+                _atomic_private(target, previous)
+                if previous_mode is not None:
+                    target.chmod(previous_mode)
+            try:
+                _run([systemctl, "--user", "daemon-reload"])
+                if previous_enabled:
+                    _run([systemctl, "--user", "enable", target.name])
+                if previous_active:
+                    _run([systemctl, "--user", "start", target.name])
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                rollback_errors.append(exc)
+            if rollback_errors:
+                raise RuntimeError(
+                    "AutoWire activation failed and native service rollback also failed"
+                ) from rollback_errors[0]
+            raise
     elif platform == "macos":
         target = home / "Library" / "LaunchAgents" / "com.soul.platform.autowire.plist"
         _atomic_private(
@@ -159,8 +234,14 @@ def install_autowire_autostart(
                 {
                     "Label": "com.soul.platform.autowire",
                     "ProgramArguments": [
-                        str(python), "-m", "soul_platform.autowire.cli", "--root",
-                        str(root), "watch", "--interval", f"{interval:g}",
+                        str(python),
+                        "-m",
+                        "soul_platform.autowire.cli",
+                        "--root",
+                        str(root),
+                        "watch",
+                        "--interval",
+                        f"{interval:g}",
                     ],
                     "RunAtLoad": True,
                     "KeepAlive": {"SuccessfulExit": False},
@@ -187,7 +268,8 @@ def install_autowire_autostart(
                     "run_level": "LeastPrivilege",
                 },
                 sort_keys=True,
-            ) + "\n"
+            )
+            + "\n"
         ).encode("utf-8"),
     )
     return target

@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PKG="soul-platform"
-PLATFORM_VERSION="0.6.0"
+PLATFORM_VERSION="0.6.1"
 CORE_VERSION="0.4.3"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 VENV="${SOUL_VENV:-$HOME/.soul/venv}"
@@ -300,6 +300,16 @@ if [ "$CHECK_ONLY" -eq 0 ] && [ "$INIT_MACHINE" -eq 1 ]; then
   esac
   SOUL_CONFIG="$SOUL_ROOT/proxy.toml"
   SOUL_DB="$SOUL_ROOT/MachineSoul.db"
+  NATIVE_AUTOSTART=1
+  MACHINE_AUTOSTART_ARGS=()
+  if [ "$(uname -s)" = "Linux" ]; then
+    if ! command -v systemctl >/dev/null 2>&1 \
+       || ! systemctl --user show-environment >/dev/null 2>&1; then
+      NATIVE_AUTOSTART=0
+      MACHINE_AUTOSTART_ARGS=(--no-autostart)
+      warn "sin systemd-user: inicializo el alma en modo bajo demanda, sin unidad huérfana ni autostart falso"
+    fi
+  fi
   PROFILE=none
   LEGACY_MODEL=""
   if [ -f "$SOUL_CONFIG" ]; then
@@ -368,9 +378,12 @@ PY
         warn "recuperando autostart/runtime desde la configuración preservada"
         "$VENV/bin/soul-machine" init --root "$SOUL_ROOT" \
           --kind "$MACHINE_KIND" --base-url "$MACHINE_BASE_URL" --model "$MACHINE_MODEL" \
+          "${MACHINE_AUTOSTART_ARGS[@]}" \
           >/dev/null 2>&1 || warn "no pude reactivar automáticamente; datos/config siguen preservados"
       }
-      "$VENV/bin/soul-machine" disable-autostart --config "$SOUL_CONFIG"
+      if [ "$NATIVE_AUTOSTART" -eq 1 ]; then
+        "$VENV/bin/soul-machine" disable-autostart --config "$SOUL_CONFIG"
+      fi
       CUTOVER_RECOVERY=1
       trap recover_legacy_runtime EXIT INT TERM
       resume_args=()
@@ -389,7 +402,8 @@ PY
     if ! "$VENV/bin/soul-machine" init \
       --kind "$MACHINE_KIND" \
       --base-url "$MACHINE_BASE_URL" \
-      --model "$MACHINE_MODEL"; then
+      --model "$MACHINE_MODEL" \
+      "${MACHINE_AUTOSTART_ARGS[@]}"; then
       if [ "${CUTOVER_ACTIVATED:-0}" -eq 1 ]; then
         warn "el runtime BGE no inició; ejecutando rollback byte-exacto"
         "$VENV/bin/soul-machine-embedding-cutover" rollback "$SOUL_CONFIG" "$checkpoint" \
@@ -397,6 +411,7 @@ PY
         CUTOVER_ACTIVATED=0
         "$VENV/bin/soul-machine" init --root "$SOUL_ROOT" \
           --kind "$MACHINE_KIND" --base-url "$MACHINE_BASE_URL" --model "$MACHINE_MODEL" \
+          "${MACHINE_AUTOSTART_ARGS[@]}" \
           || die "HOLD CRÍTICO: rollback completado pero no pude reactivar el runtime legacy"
         CUTOVER_RECOVERY=0
         trap - EXIT INT TERM
@@ -408,7 +423,11 @@ PY
       CUTOVER_RECOVERY=0
       trap - EXIT INT TERM
     fi
-    ok "alma persistente + autostart verificados"
+    if [ "$NATIVE_AUTOSTART" -eq 1 ]; then
+      ok "alma persistente + autostart verificados"
+    else
+      ok "alma persistente inicializada en modo bajo demanda (sin gestor de servicios disponible)"
+    fi
     "$VENV/bin/soul-machine" ensure-profile --config "$SOUL_CONFIG" \
       || die "no pude inicializar/verificar el perfil vivo"
     ok "perfil vivo inicializado sin sobrescribir identidad existente"
@@ -419,11 +438,16 @@ PY
     # attestation equivalent; shadow discovery never changes the active brain.
     "$AUTOWIRE" --root "$SOUL_ROOT" reconcile >/dev/null \
       || die "AutoWire no pudo reconciliar cerebros locales"
-    "$AUTOWIRE" --root "$SOUL_ROOT" install-autostart >/dev/null \
-      || die "AutoWire no pudo instalar su autostart per-user"
+    if command -v systemctl >/dev/null 2>&1 \
+       && systemctl --user show-environment >/dev/null 2>&1; then
+      "$AUTOWIRE" --root "$SOUL_ROOT" install-autostart >/dev/null \
+        || die "AutoWire no pudo instalar su autostart per-user"
+      ok "AutoWire shadow instalado y verificado al arranque"
+    else
+      warn "sin systemd-user: AutoWire queda reconciliado y disponible bajo demanda, sin autostart falso"
+    fi
     "$AUTOWIRE" --root "$SOUL_ROOT" status >/dev/null \
       || die "AutoWire no pudo verificar su estado"
-    ok "AutoWire shadow instalado y verificado al arranque"
     if [ "$CONSENT_CLOUD_MEMORY" -eq 1 ]; then
       [ -t 0 ] && [ -t 1 ] \
         || die "el consentimiento privado requiere una consola interactiva del propietario"

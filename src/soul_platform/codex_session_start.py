@@ -36,7 +36,7 @@ def _requests(
             "params": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "soul-lifecycle-hook", "version": "0.6.0"},
+                "clientInfo": {"name": "soul-lifecycle-hook", "version": "0.6.1"},
             },
         },
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},

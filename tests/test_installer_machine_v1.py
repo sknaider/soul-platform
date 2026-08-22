@@ -14,7 +14,7 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert "soul-machine\" init" in text
     assert "rm -rf" not in text
     assert "curl" not in text or "| bash" not in text
-    assert 'PLATFORM_VERSION="0.6.0"' in text
+    assert 'PLATFORM_VERSION="0.6.1"' in text
     assert 'CORE_VERSION="0.4.3"' in text
     assert "verify_bundled_wheel" in text and "--find-links" not in text
     assert '--no-deps --force-reinstall "$CORE_WHEEL"' in text
@@ -45,6 +45,12 @@ def test_unix_installer_is_parseable_and_initializes_machine_soul():
     assert '"$AUTOWIRE" --root "$SOUL_ROOT" reconcile' in text
     assert '"$AUTOWIRE" --root "$SOUL_ROOT" install-autostart' in text
     assert '"$AUTOWIRE" --root "$SOUL_ROOT" status' in text
+    assert "systemctl --user show-environment" in text
+    assert "sin autostart falso" in text
+    assert 'MACHINE_AUTOSTART_ARGS=(--no-autostart)' in text
+    assert '"${MACHINE_AUTOSTART_ARGS[@]}"' in text
+    assert "modo bajo demanda, sin unidad huérfana" in text
+    assert "alma persistente inicializada en modo bajo demanda" in text
     assert "Runtime trust" in text and "fail-closed" in text
     assert '[ -t 0 ] && [ -t 1 ]' in text
     assert 'context-consent grant --client codex --config "$SOUL_CONFIG" >/dev/null' not in text
@@ -89,7 +95,7 @@ def test_windows_installer_is_user_space_and_initializes_machine_soul():
     assert "Scripts\\soul-tray-cli.exe" in text
     assert 'Invoke-Checked $trayCli @("--headless-check")' in text
     assert "Start-Process -Verb RunAs" not in text
-    assert '[version]"0.6.0"' in text
+    assert '[version]"0.6.1"' in text
     assert "soul-framework 0.4.3 exacto" in text
     assert '$installedCoreVersion = & $venvPython -c' in text
     assert '$installedCoreVersion = & $python -c' not in text
@@ -254,7 +260,7 @@ def test_windows_click_installer_is_local_and_non_elevating():
     assert "curl" not in text
 def test_windows_novice_guide_matches_tray_release():
     text = (ROOT / "installer" / "LEEME-WINDOWS.txt").read_text()
-    assert "SOUL PLATFORM 0.6.0" in text
+    assert "SOUL PLATFORM 0.6.1" in text
     assert "icono violeta SOUL" in text
     assert "Copiar token local" in text
     assert "Python 3.13 x64" in text

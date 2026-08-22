@@ -75,7 +75,7 @@ function Move-SoulAtomicFile([string]$Temporary, [string]$Destination, [string]$
         throw "Falta el archivo temporal para $Label"
     }
     if (Test-Path -LiteralPath $Destination -PathType Leaf) {
-        # Windows PowerShell 5.1/.NET Framework rejects File.Replace(..., $null)
+        # Windows PowerShell 5.1/.NET Framework rejects a null backup path
         # on some systems. A real, unique backup path makes the replacement
         # atomic and preserves the previous bytes instead of deleting them.
         $backupRoot = Join-Path $env:LOCALAPPDATA "SOUL\atomic-backups"
@@ -97,7 +97,7 @@ function Write-InstallReceipt([string]$Root, [string]$Status) {
     $payload = [ordered]@{
         schema_version = 1
         status = $Status
-        platform_version = "0.6.0"
+        platform_version = "0.6.1"
         core_version = "0.4.3"
         utc = [DateTime]::UtcNow.ToString("o")
         machine = $env:COMPUTERNAME
@@ -582,11 +582,7 @@ function Sync-ClaudeDesktopMcpConfig([string]$Mcp, [string]$Config) {
         if ((Get-OptionalFileHash $desktopConfig) -ne $beforeHash) {
             throw "HOLD: Claude Desktop cambio su config concurrentemente; preservo esos bytes"
         }
-        if ($beforeHash -eq "__MISSING__") {
-            [IO.File]::Move($temporary, $desktopConfig)
-        } else {
-            [IO.File]::Replace($temporary, $desktopConfig, $null, $true)
-        }
+        Move-SoulAtomicFile $temporary $desktopConfig "claude-desktop"
         $wrote = $true
         $postHash = Get-OptionalFileHash $desktopConfig
         $verified = Get-Content -LiteralPath $desktopConfig -Raw | ConvertFrom-Json
@@ -986,7 +982,7 @@ import base64, csv, hashlib, importlib.metadata as m
 import io, json, pathlib, sys, urllib.parse
 
 for name, expected_version, wheel, expected_hash in (
-    ('soul-platform', '0.6.0', sys.argv[1], sys.argv[2]),
+    ('soul-platform', '0.6.1', sys.argv[1], sys.argv[2]),
     ('soul-framework', '0.4.3', sys.argv[3], sys.argv[4]),
 ):
     if m.version(name) != expected_version:
@@ -1119,7 +1115,7 @@ if (-not $Check) {
             $venvPython $resolvedPackageSource $BundledPlatformHash $BundledCoreWheel $BundledCoreHash
     }
     if ($exactBundleInstalled) {
-        Skip "SOUL Platform 0.6.0 + Core 0.4.3 ya coinciden byte a byte con el bundle"
+        Skip "SOUL Platform 0.6.1 + Core 0.4.3 ya coinciden byte a byte con el bundle"
         Mark-Skipped "SOUL Platform/Core (bytes exactos presentes)"
         $dependencyProbe = Invoke-NativeCapture $venvPython @("-m", "pip", "check")
         if ($dependencyProbe.ExitCode -ne 0) {
@@ -1160,8 +1156,8 @@ Invoke-Checked $venvPython @("-c", "import soul_platform, soul_framework")
 Invoke-Checked $venvPython @("-m", "pip", "check")
 $installedVersion = & $venvPython -c "from importlib.metadata import version; print(version('soul-platform'))"
 if ($LASTEXITCODE -ne 0) { throw "No pude leer la version instalada de soul-platform" }
-if ([version]$installedVersion.Trim() -ne [version]"0.6.0") {
-    throw "Se requiere soul-platform 0.6.0 exacto; quedo instalada $installedVersion"
+if ([version]$installedVersion.Trim() -ne [version]"0.6.1") {
+    throw "Se requiere soul-platform 0.6.1 exacto; quedo instalada $installedVersion"
 }
 
 $installedCoreVersion = & $venvPython -c "import importlib.metadata as m; print(m.version('soul-framework'))"

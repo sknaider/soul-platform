@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import stat
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +32,8 @@ from soul_platform.proxy import ProxySettings
 @pytest.fixture(autouse=True)
 def _trusted_runtime_stub(monkeypatch):
     monkeypatch.setattr(
-        "soul_platform.autowire.manager.verify_runtime_attestation", lambda _settings: True
+        "soul_platform.autowire.manager.verify_runtime_attestation",
+        lambda _settings: True,
     )
 
 
@@ -115,15 +118,21 @@ def test_registry_locks_machine_identity_and_embedding_profile(tmp_path):
         path, machine_soul_id="machine-a", embedding_identity=("bge-m3", 1024, "bge-m3")
     )
     provider = _candidate()
-    registry.upsert(provider, state=ProviderState.IDENTITY_ATTESTED, memory_allowed=True)
+    registry.upsert(
+        provider, state=ProviderState.IDENTITY_ATTESTED, memory_allowed=True
+    )
     assert registry.rows()[0]["memory_allowed"] == 1
     with pytest.raises(RegistryConflict, match="machine_soul_id"):
         ProviderRegistry(
-            path, machine_soul_id="machine-b", embedding_identity=("bge-m3", 1024, "bge-m3")
+            path,
+            machine_soul_id="machine-b",
+            embedding_identity=("bge-m3", 1024, "bge-m3"),
         )
     with pytest.raises(RegistryConflict, match="embedding_identity"):
         ProviderRegistry(
-            path, machine_soul_id="machine-a", embedding_identity=("other", 768, "other")
+            path,
+            machine_soul_id="machine-a",
+            embedding_identity=("other", 768, "other"),
         )
 
 
@@ -192,7 +201,9 @@ def test_windows_reconcile_syncs_codex_app_grants_without_blocking_discovery(
     assert claude_config_calls[0] == calls[0][1]
     assert claude_hook_calls[0]["config_path"] == result.config
     assert claude_hook_calls[0]["server_executable"] == calls[0][1]["server_executable"]
-    assert claude_hook_calls[0]["hook_executable"].name == "soul-codex-session-start.exe"
+    assert (
+        claude_hook_calls[0]["hook_executable"].name == "soul-codex-session-start.exe"
+    )
     assert status["discovery_errors"] == {}
     assert status["providers"][0]["state"] == "ACTIVE"
 
@@ -236,6 +247,7 @@ def test_activation_preserves_embedding_and_uses_generation_fence(
     def fake_switch(config, **kwargs):
         settings = ProxySettings.from_toml(config)
         from dataclasses import replace
+
         from soul_platform.bootstrap import _atomic_config, render_config
 
         changed = replace(
@@ -253,14 +265,22 @@ def test_activation_preserves_embedding_and_uses_generation_fence(
     after = ProxySettings.from_toml(result.config)
     assert status["generation"] == 2
     assert after.upstream_model == "gemma:4b"
-    assert (after.embedding_provider, after.embedding_dimensions, after.embedding_model) == (
-        before.embedding_provider,before.embedding_dimensions,before.embedding_model,
+    assert (
+        after.embedding_provider,
+        after.embedding_dimensions,
+        after.embedding_model,
+    ) == (
+        before.embedding_provider,
+        before.embedding_dimensions,
+        before.embedding_model,
     )
     with pytest.raises(RegistryConflict, match="generation changed"):
         manager.registry.commit_binding(old.provider_id, expected_generation=1)
 
 
-def test_activation_lock_checks_generation_before_any_side_effect(tmp_path, monkeypatch):
+def test_activation_lock_checks_generation_before_any_side_effect(
+    tmp_path, monkeypatch
+):
     result = _initialized(tmp_path)
     old, new = _candidate(), _candidate("gemma:4b")
     monkeypatch.setattr(
@@ -277,6 +297,7 @@ def test_activation_lock_checks_generation_before_any_side_effect(tmp_path, monk
             calls += 1
         settings = ProxySettings.from_toml(config)
         from dataclasses import replace
+
         from soul_platform.bootstrap import _atomic_config, render_config
 
         changed = replace(settings, upstream_model=kwargs["upstream_model"])
@@ -304,7 +325,9 @@ def test_activation_lock_checks_generation_before_any_side_effect(tmp_path, monk
     assert manager.registry.binding() == (new.provider_id, 2)
 
 
-def test_active_provider_becomes_unreachable_without_changing_binding(tmp_path, monkeypatch):
+def test_active_provider_becomes_unreachable_without_changing_binding(
+    tmp_path, monkeypatch
+):
     result = _initialized(tmp_path)
     current = _candidate()
     monkeypatch.setattr(
@@ -315,14 +338,20 @@ def test_active_provider_becomes_unreachable_without_changing_binding(tmp_path, 
     binding = manager.registry.binding()
     monkeypatch.setattr("soul_platform.autowire.manager.discover_all", lambda: ([], {}))
     status = manager.reconcile()
-    row = next(item for item in status["providers"] if item["provider_id"] == current.provider_id)
+    row = next(
+        item
+        for item in status["providers"]
+        if item["provider_id"] == current.provider_id
+    )
     assert row["state"] == "ACTIVE_UNREACHABLE"
     assert row["memory_allowed"] == 0
     assert manager.registry.binding() == binding
     assert ProxySettings.from_toml(result.config).upstream_model == current.model
 
 
-def test_windows_runtime_receipt_binds_owner_process_and_executable(tmp_path, monkeypatch):
+def test_windows_runtime_receipt_binds_owner_process_and_executable(
+    tmp_path, monkeypatch
+):
     import soul_platform.runtime_attestation as attestation
 
     result = _initialized(tmp_path)
@@ -347,7 +376,9 @@ def test_windows_runtime_receipt_binds_owner_process_and_executable(tmp_path, mo
     assert attestation.verify_runtime_attestation(settings) is False
 
 
-def test_legacy_config_upgrade_adds_t5_with_backup_and_preserves_bytes_invariants(tmp_path):
+def test_legacy_config_upgrade_adds_t5_with_backup_and_preserves_bytes_invariants(
+    tmp_path,
+):
     result = _initialized(tmp_path)
     text = result.config.read_text()
     start, end = text.index("[memory_egress]"), text.index("[upstream]")
@@ -393,8 +424,155 @@ def test_windows_autowire_task_is_current_user_limited_and_rollback_capable(
     assert json.loads(target.read_text())["run_level"] == "LeastPrivilege"
 
 
+def test_linux_autowire_without_systemd_writes_nothing(tmp_path, monkeypatch):
+    result = _initialized(tmp_path)
+    monkeypatch.setattr(
+        "soul_platform.autowire.service.shutil.which", lambda _name: None
+    )
+
+    with pytest.raises(RuntimeError, match="systemd user manager"):
+        install_autowire_autostart(
+            root=result.root,
+            platform="linux",
+            home=tmp_path / "home",
+            python=Path(sys.executable),
+        )
+
+    assert not (tmp_path / "home/.config/systemd/user/soul-autowire.service").exists()
+    assert not (result.root / "autowire-autostart.json").exists()
+
+
+def test_linux_autowire_activation_failure_restores_previous_unit(
+    tmp_path, monkeypatch
+):
+    result = _initialized(tmp_path)
+    home = tmp_path / "home"
+    target = home / ".config/systemd/user/soul-autowire.service"
+    target.parent.mkdir(parents=True)
+    original = b"[Unit]\nDescription=owner bytes\n"
+    target.write_bytes(original)
+    target.chmod(0o640)
+    calls = []
+
+    def fail_enable(command, **_kwargs):
+        calls.append(command)
+        if "is-enabled" in command or "is-active" in command:
+            return SimpleNamespace(returncode=1, stdout="")
+        if "enable" in command:
+            raise RuntimeError("synthetic activation failure")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(
+        "soul_platform.autowire.service.shutil.which",
+        lambda _name: "/usr/bin/systemctl",
+    )
+    monkeypatch.setattr("soul_platform.autowire.service._run", fail_enable)
+    with pytest.raises(RuntimeError, match="synthetic activation failure"):
+        install_autowire_autostart(
+            root=result.root,
+            platform="linux",
+            home=home,
+            python=Path(sys.executable),
+        )
+
+    assert target.read_bytes() == original
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert calls[-1][-1] == "daemon-reload"
+    assert not (result.root / "autowire-autostart.json").exists()
+
+
+def test_linux_autowire_partial_start_is_stopped_and_fresh_unit_removed(
+    tmp_path, monkeypatch
+):
+    result = _initialized(tmp_path)
+    home = tmp_path / "home"
+    target = home / ".config/systemd/user/soul-autowire.service"
+    state = {"active": False}
+    calls = []
+
+    def partial_start(command, **_kwargs):
+        calls.append(command)
+        if "enable" in command and "--now" in command:
+            state["active"] = True
+            raise RuntimeError("synthetic post-start failure")
+        if "stop" in command:
+            state["active"] = False
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(
+        "soul_platform.autowire.service.shutil.which",
+        lambda _name: "/usr/bin/systemctl",
+    )
+    monkeypatch.setattr("soul_platform.autowire.service._run", partial_start)
+    with pytest.raises(RuntimeError, match="synthetic post-start failure"):
+        install_autowire_autostart(
+            root=result.root,
+            platform="linux",
+            home=home,
+            python=Path(sys.executable),
+        )
+
+    assert state["active"] is False
+    assert ["/usr/bin/systemctl", "--user", "stop", target.name] in calls
+    assert ["/usr/bin/systemctl", "--user", "disable", target.name] in calls
+    assert not target.exists()
+    assert not (result.root / "autowire-autostart.json").exists()
+
+
+def test_linux_autowire_failure_restores_prior_enabled_active_state(
+    tmp_path, monkeypatch
+):
+    result = _initialized(tmp_path)
+    home = tmp_path / "home"
+    target = home / ".config/systemd/user/soul-autowire.service"
+    target.parent.mkdir(parents=True)
+    original = b"[Unit]\nDescription=prior live unit\n"
+    target.write_bytes(original)
+    target.chmod(0o640)
+    state = {"active": True, "enabled": True, "failed_once": False}
+
+    def fail_replacement_once(command, **_kwargs):
+        if "show-environment" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        if "is-enabled" in command:
+            return SimpleNamespace(returncode=0 if state["enabled"] else 1, stdout="")
+        if "is-active" in command:
+            return SimpleNamespace(returncode=0 if state["active"] else 1, stdout="")
+        if "enable" in command and "--now" in command and not state["failed_once"]:
+            state.update(active=True, enabled=True, failed_once=True)
+            raise RuntimeError("replacement failed after partial start")
+        if "stop" in command:
+            state["active"] = False
+        elif "disable" in command:
+            state["enabled"] = False
+        elif "enable" in command:
+            state["enabled"] = True
+        elif "start" in command:
+            state["active"] = True
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(
+        "soul_platform.autowire.service.shutil.which",
+        lambda _name: "/usr/bin/systemctl",
+    )
+    monkeypatch.setattr("soul_platform.autowire.service._run", fail_replacement_once)
+    with pytest.raises(RuntimeError, match="replacement failed after partial start"):
+        install_autowire_autostart(
+            root=result.root,
+            platform="linux",
+            home=home,
+            python=Path(sys.executable),
+        )
+
+    assert target.read_bytes() == original
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert state == {"active": True, "enabled": True, "failed_once": True}
+    assert not (result.root / "autowire-autostart.json").exists()
+
+
 async def test_unattested_loopback_never_receives_private_context(tmp_path):
     import httpx
+
     from soul_platform.proxy import create_app
 
     result = _initialized(tmp_path)
@@ -415,7 +593,9 @@ async def test_unattested_loopback_never_receives_private_context(tmp_path):
         return httpx.Response(
             200,
             json={
-                "id": "x", "object": "chat.completion", "model": settings.upstream_model,
+                "id": "x",
+                "object": "chat.completion",
+                "model": settings.upstream_model,
                 "choices": [{"message": {"role": "assistant", "content": "ok"}}],
             },
         )
