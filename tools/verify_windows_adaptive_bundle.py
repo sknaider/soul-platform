@@ -121,6 +121,13 @@ def verify(bundle: Path) -> dict[str, object]:
     }
 
 
+def write_receipt(path: Path, encoded: str) -> None:
+    """Write a verifier receipt once; never clobber an existing release receipt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(encoded)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle", type=Path)
@@ -129,8 +136,7 @@ def main() -> int:
     result = verify(args.bundle)
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.receipt:
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(encoded, encoding="utf-8")
+        write_receipt(args.receipt, encoded)
     print(encoded, end="")
     return 0
 

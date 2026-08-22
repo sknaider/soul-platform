@@ -66,3 +66,11 @@ def test_adaptive_bundle_accepts_exact_release_and_rejects_previous_version(tmp_
     previous = _write_bundle(tmp_path, "0.7.0.dev0")
     with pytest.raises(ValueError, match="exact Platform 0.7.0.dev1"):
         MODULE.verify(previous)
+
+
+def test_verifier_receipt_is_write_once(tmp_path):
+    receipt = tmp_path / "receipt.json"
+    MODULE.write_receipt(receipt, "first\n")
+    with pytest.raises(FileExistsError):
+        MODULE.write_receipt(receipt, "clobbered\n")
+    assert receipt.read_text(encoding="utf-8") == "first\n"
